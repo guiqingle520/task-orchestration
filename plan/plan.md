@@ -10,6 +10,9 @@ milestones:
   - id: M3
     name: 多维分析与团队协作发布
     due: 2026-12-18
+  - id: M4
+    name: 多项目工作区、可视化规划与预警演进
+    due: 2026-12-15
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -187,6 +190,94 @@ tasks:
     progress: 100
     actualStart: 2026-11-17
     actualEnd: 2026-11-17
+  - id: T-17
+    title: 计算燃尽图曲线与七日速率完工预测纯函数并补齐单测
+    owner: codex
+    milestone: M4
+    start: 2026-11-23
+    end: 2026-11-25
+    deps: [T-3]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-18
+    title: 渲染 SVG 燃尽图与速率预测卡片并支持按里程碑筛选
+    owner: antigravity
+    milestone: M4
+    start: 2026-11-30
+    end: 2026-12-02
+    deps: [T-4, T-17]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-19
+    title: 实现 plan.md 结构化序列化回写与规划者变更原因审计接口
+    owner: codex
+    milestone: M4
+    start: 2026-11-26
+    end: 2026-11-27
+    deps: [T-1, T-2]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-20
+    title: 构建可视化规划器界面支持新增拆分任务与甘特拖拽改期
+    owner: antigravity
+    milestone: M4
+    start: 2026-12-03
+    end: 2026-12-04
+    deps: [T-9, T-19]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-21
+    title: 实现多项目工作区注册表与多目录监听服务接口
+    owner: codex
+    milestone: M4
+    start: 2026-11-30
+    end: 2026-12-02
+    deps: [T-10]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-22
+    title: 新增顶栏多项目切换器与本地仓库路径注册弹窗
+    owner: antigravity
+    milestone: M4
+    start: 2026-12-07
+    end: 2026-12-09
+    deps: [T-20, T-21]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-23
+    title: 实现飞书钉钉企微通用 Webhook 适配器与风险指纹去重推送
+    owner: codex
+    milestone: M4
+    start: 2026-12-03
+    end: 2026-12-04
+    deps: [T-3, T-21]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-24
+    title: 新增 Webhook 渠道配置弹窗与风险周报一键推送交互
+    owner: antigravity
+    milestone: M4
+    start: 2026-12-10
+    end: 2026-12-11
+    deps: [T-22, T-23]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
 ---
 
 # 计划说明
@@ -208,3 +299,4 @@ tasks:
 变更记录:2026-11-17 codex 修复 T-16 将 agy-node sidecar 误判为桌面主程序的问题；同步桌面两处脚本，检查确认桌面进程为零且识别一项辅助进程，未终止后台程序。
 
 变更记录:2026-11-17 规划者根据用户要求将未完成的 T-8、T-9、T-15、T-12、T-13、T-14 转交 codex；原计划日期和依赖保持不变。
+变更记录:2026-11-17 规划者按用户确认的 M4 方案增量规划里程碑 M4 与任务 T-17 ~ T-24(燃尽图、可视化规划器、多项目工作区、多渠道 Webhook 预警),由 codex 与 antigravity 并行分工。
