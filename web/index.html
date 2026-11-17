@@ -26,15 +26,30 @@
       <span><i class="sw slip"></i>预计延期</span><span><i class="sw crit">★</i>关键路径</span>
       <span><i class="sw ms"></i>里程碑</span><span><i class="sw today"></i>今天</span>
     </div>
+    <div id="gctrl" class="gctrl"></div>
+    <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><label>任务 <select id="simTask"></select></label><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
+    <div id="simResult" class="sim-result" aria-live="polite"></div>
     <div id="gantt"></div>
     <div id="detail" class="detail"></div>
   </section>
   <aside>
+    <section class="card"><h2>进度报告</h2><div class="snapshot-controls"><button id="exportMarkdown">导出 Markdown</button><button id="exportSvg">导出 SVG</button><button id="copySummary">复制摘要</button></div><div id="reportMessage" class="snapshot-result" role="status"></div></section>
+    <section class="card"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
     <section class="card"><h2>里程碑</h2><div id="milestones"></div></section>
     <section class="card"><h2>风险预警<small>点击定位任务</small></h2><ul id="risks" class="risks"></ul></section>
-    <section class="card"><h2>人员负载<small>每周未完成任务数</small></h2><div id="load"></div></section>
+    <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
   </aside>
 </main>
+<dialog id="taskDialog" class="task-dialog">
+  <form id="taskForm">
+    <h2 id="taskTitle">任务详情</h2>
+    <p id="taskMeta"></p>
+    <label>状态 <select id="taskStatus"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></label>
+    <label>进度 (%) <input id="taskProgress" type="number" min="0" max="100" step="1" required></label>
+    <p id="taskMessage" role="status"></p>
+    <div class="dialog-actions"><button type="button" id="validatePlan">校验计划</button><button type="button" id="closeTask">取消</button><button type="submit">保存</button></div>
+  </form>
+</dialog>
 <script type="module" src="app.js"></script>
 </body>
 </html>

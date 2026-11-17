@@ -11,6 +11,17 @@ milestones:
     name: 多维分析与团队协作发布
     due: 2026-12-18
 tasks:
+  - id: T-16
+    title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
+    owner: codex
+    milestone: M1
+    start: 2026-11-17
+    end: 2026-11-17
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-1
     title: 定义 plan.md 规范与校验器
     owner: planner
@@ -90,26 +101,26 @@ tasks:
     actualEnd: 2026-11-17
   - id: T-8
     title: 甘特图缩放与视图切换(日/周/月跨度与多里程碑折叠)
-    owner: antigravity
+    owner: codex
     milestone: M2
     start: 2026-11-21
     end: 2026-11-24
     deps: [T-5]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-9
     title: 任务交互抽屉(查看详情、直接修改状态与手工触发校验)
-    owner: antigravity
+    owner: codex
     milestone: M2
     start: 2026-11-25
     end: 2026-11-27
     deps: [T-8]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-10
     title: 本地文件变更监听(fs.watch 实现 plan.md 秒级 SSE/热更新)
     owner: codex
@@ -117,10 +128,10 @@ tasks:
     start: 2026-11-21
     end: 2026-11-24
     deps: [T-2]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-11
     title: 模拟演练推演算法(metrics.js 纯函数:模拟延期与关键路径连锁传导)
     owner: codex
@@ -128,57 +139,59 @@ tasks:
     start: 2026-11-25
     end: 2026-11-27
     deps: [T-3, T-10]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-15
     title: 模拟演练界面(拖拽模拟延期并展示推演结果)
-    owner: antigravity
+    owner: codex
     milestone: M2
     start: 2026-11-30
     end: 2026-12-03
     deps: [T-9, T-11]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-12
     title: 项目基线与历史快照对比(对比版本间排期变更与进度滑动)
-    owner: dev
+    owner: codex
     milestone: M3
     start: 2026-12-05
     end: 2026-12-08
     deps: [T-15]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-13
     title: 人员负载热力图与资源冲突再平衡建议
-    owner: dev
+    owner: codex
     milestone: M3
     start: 2026-12-09
     end: 2026-12-12
     deps: [T-12]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-14
     title: 进度报告与周报导出(Markdown、SVG与一键复制摘要)
-    owner: dev
+    owner: codex
     milestone: M3
     start: 2026-12-15
     end: 2026-12-18
     deps: [T-13]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
 ---
 
 # 计划说明
+
+变更记录:2026-11-17 规划者新增 T-16，按用户要求交付 Windows Antigravity Clash 代理启动脚本；由 codex 当日完成，不依赖驾驶舱功能。
 
 前端采用零依赖方案(原生 ES 模块 + SVG + Node 服务),无需 npm install。
 变更记录:2026-11-17 规划者将原 T-2/T-3 拆分为 T-2/T-3/T-4。
@@ -187,3 +200,11 @@ tasks:
 变更记录:2026-11-17 规划者新增 T-7(git commit 自动更新任务进度),依据用户需求。
 变更记录:2026-11-17 规划者增量规划后续功能(M2 交互强化与自动化、M3 多维分析与报告),新增 T-8 ~ T-14。
 变更记录:2026-11-17 规划者按用户确认将 M2 并行分工:T-8/T-9 归 antigravity,T-10 归 codex 并提前至 11-21 开始(仅依赖 T-2);T-11 拆为算法(codex)与新增 T-15 界面(antigravity),T-12 改依赖 T-15。
+
+变更记录:2026-11-17 codex 修复用户移动到桌面的 T-16 启动入口，配套脚本改为同目录引用并通过检查。
+
+变更记录:2026-11-17 codex 按用户要求将完整 T-16 启动文件及使用说明复制至桌面 start-Antigravity 文件夹，启动前检查通过。
+
+变更记录:2026-11-17 codex 修复 T-16 将 agy-node sidecar 误判为桌面主程序的问题；同步桌面两处脚本，检查确认桌面进程为零且识别一项辅助进程，未终止后台程序。
+
+变更记录:2026-11-17 规划者根据用户要求将未完成的 T-8、T-9、T-15、T-12、T-13、T-14 转交 codex；原计划日期和依赖保持不变。

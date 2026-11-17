@@ -3,6 +3,74 @@ const DAY = 86400000;
 export const toDay = (s) => Math.floor(Date.parse(s + 'T00:00:00Z') / DAY);
 export const fromDay = (n) => new Date(n * DAY).toISOString().slice(0, 10);
 
+// 推演使用日历日及完成后下一日开始的依赖关系,不修改输入计划。
+export function simulateDelays(data, delays = {}) {
+  const tasks = data.tasks;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  if (byId.size !== tasks.length) throw new Error('任务 ID 重复');
+  for (const [id, days] of Object.entries(delays)) {
+    if (!byId.has(id)) throw new Error(`未知任务: ${id}`);
+    if (!Number.isSafeInteger(days) || days < 0) throw new Error(`延期天数必须为非负整数: ${id}`);
+  }
+
+  const ordered = [], visiting = new Set(), visited = new Set();
+  function visit(id) {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) throw new Error(`任务依赖存在循环: ${id}`);
+    const task = byId.get(id);
+    if (!task) throw new Error(`未知依赖: ${id}`);
+    visiting.add(id);
+    for (const dep of task.deps || []) visit(dep);
+    visiting.delete(id);
+    visited.add(id);
+    ordered.push(task);
+  }
+  for (const task of tasks) visit(task.id);
+
+  const baseline = new Map(), simulated = new Map(), successors = new Map(tasks.map((t) => [t.id, []]));
+  for (const task of ordered) {
+    const start = toDay(task.start), end = toDay(task.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || fromDay(start) !== task.start || fromDay(end) !== task.end || end < start) {
+      throw new Error(`任务日期无效: ${task.id}`);
+    }
+    const duration = end - start + 1;
+    const deps = task.deps || [];
+    for (const dep of deps) successors.get(dep).push(task.id);
+    const baseStart = Math.max(start, ...deps.map((id) => baseline.get(id).end + 1));
+    const simStart = Math.max(baseStart + (delays[task.id] || 0), ...deps.map((id) => simulated.get(id).end + 1));
+    baseline.set(task.id, { start: baseStart, end: baseStart + duration - 1 });
+    simulated.set(task.id, { start: simStart, end: simStart + duration - 1 });
+  }
+
+  const projectEnd = Math.max(...Array.from(simulated.values(), (item) => item.end));
+  const latestStart = new Map(), slack = new Map();
+  for (const task of [...ordered].reverse()) {
+    const item = simulated.get(task.id);
+    const ends = successors.get(task.id).map((id) => latestStart.get(id) - 1);
+    const latestEnd = Math.min(projectEnd, ...ends);
+    slack.set(task.id, latestEnd - item.end);
+    latestStart.set(task.id, latestEnd - (item.end - item.start));
+  }
+
+  const resultTasks = Object.fromEntries(tasks.map((task) => {
+    const base = baseline.get(task.id), sim = simulated.get(task.id);
+    return [task.id, {
+      baselineStart: fromDay(base.start), baselineEnd: fromDay(base.end),
+      start: fromDay(sim.start), end: fromDay(sim.end),
+      delayDays: sim.end - base.end, directDelayDays: delays[task.id] || 0,
+      slackDays: slack.get(task.id), critical: slack.get(task.id) === 0,
+    }];
+  }));
+  const milestones = data.milestones.map((milestone) => {
+    const members = tasks.filter((task) => task.milestone === milestone.id);
+    if (!members.length) return { id: milestone.id, baselineEnd: null, end: null, delayDays: 0 };
+    const baseEnd = Math.max(...members.map((task) => baseline.get(task.id).end));
+    const simEnd = Math.max(...members.map((task) => simulated.get(task.id).end));
+    return { id: milestone.id, baselineEnd: fromDay(baseEnd), end: fromDay(simEnd), delayDays: simEnd - baseEnd };
+  });
+  return { tasks: resultTasks, milestones, criticalTaskIds: tasks.filter((task) => resultTasks[task.id].critical).map((task) => task.id) };
+}
+
 export function compute(data, todayStr) {
   const today = toDay(todayStr);
   const byId = new Map(data.tasks.map((t) => [t.id, t]));
@@ -38,7 +106,7 @@ export function compute(data, todayStr) {
   for (const t of data.tasks) {
     const i = info.get(t.id);
     i.slip = slipOf(t.id);
-    i.forecastEnd = i.e + i.slip;
+    i.forecastEnd = t.status === 'done' && t.actualEnd ? toDay(t.actualEnd) : i.e + i.slip;
     i.propagated = t.status !== 'done' && i.slip > i.ownSlip; // 因上游而延期
   }
 
@@ -57,7 +125,10 @@ export function compute(data, todayStr) {
     return b;
   };
   let tail = null;
-  for (const t of data.tasks) if (!tail || longest(t.id).len > best.get(tail).len) tail = t.id;
+  for (const t of data.tasks) {
+    const length = longest(t.id).len;
+    if (!tail || length > best.get(tail).len) tail = t.id;
+  }
   const critical = new Set();
   for (let n = tail; n; n = best.get(n).prev) critical.add(n);
   for (const t of data.tasks) info.get(t.id).critical = critical.has(t.id);

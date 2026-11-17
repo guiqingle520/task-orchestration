@@ -5,6 +5,7 @@
   "scripts": {
     "plan:check": "node scripts/validate-plan.mjs",
     "plan:sync": "node scripts/sync-git-progress.mjs",
+    "test": "node --test tests/*.test.mjs",
     "start": "node server/server.mjs"
   }
 }
