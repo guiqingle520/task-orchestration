@@ -8,8 +8,15 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand"><h1>任务时间线驾驶舱</h1><span id="project" class="proj"></span><span id="pill" class="pill"></span></div>
+  <div class="brand">
+    <h1>任务时间线驾驶舱</h1>
+    <span id="project" class="proj" hidden></span>
+    <select id="projectSelect" class="proj-select" aria-label="选择工作区项目"></select>
+    <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 项目</button>
+    <span id="pill" class="pill"></span>
+  </div>
   <div class="ctrl">
+    <label class="planner-toggle" title="开启后可新建/拆分任务、拖拽调整排期并记录变更原因"><input type="checkbox" id="plannerMode"> 规划模式</label>
     <label>今天 <input type="date" id="today"></label>
     <button id="reset" title="恢复为真实今天">重置</button>
     <button id="syncGit" title="扫描 git commit 历史中的任务 ID 并同步进度">同步 Git</button>
@@ -33,23 +40,114 @@
     <div id="detail" class="detail"></div>
   </section>
   <aside>
-    <section class="card"><h2>进度报告</h2><div class="snapshot-controls"><button id="exportMarkdown">导出 Markdown</button><button id="exportSvg">导出 SVG</button><button id="copySummary">复制摘要</button></div><div id="reportMessage" class="snapshot-result" role="status"></div></section>
+    <section class="card">
+      <div class="card-head">
+        <h2>燃尽图与速率<small>工期当量收敛</small></h2>
+        <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
+      </div>
+      <div id="burndownSummary" class="burndown-summary"></div>
+      <div id="burndownChart" class="burndown-chart"></div>
+    </section>
+    <section class="card">
+      <h2>进度报告</h2>
+      <div class="snapshot-controls">
+        <button id="exportMarkdown">导出 Markdown</button>
+        <button id="exportSvg">导出 SVG</button>
+        <button id="copySummary">复制摘要</button>
+        <button type="button" id="pushReportBtn">推送周报</button>
+      </div>
+      <div id="reportMessage" class="snapshot-result" role="status"></div>
+    </section>
     <section class="card"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
     <section class="card"><h2>里程碑</h2><div id="milestones"></div></section>
-    <section class="card"><h2>风险预警<small>点击定位任务</small></h2><ul id="risks" class="risks"></ul></section>
+    <section class="card">
+      <div class="card-head">
+        <h2>风险预警<small>点击定位任务</small></h2>
+        <div class="snapshot-controls">
+          <button type="button" id="pushRisksBtn">推送预警</button>
+          <button type="button" id="configWebhookBtn">配置渠道</button>
+        </div>
+      </div>
+      <div id="webhookStatus" class="snapshot-result" role="status"></div>
+      <ul id="risks" class="risks"></ul>
+    </section>
     <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
   </aside>
 </main>
+
 <dialog id="taskDialog" class="task-dialog">
   <form id="taskForm">
     <h2 id="taskTitle">任务详情</h2>
     <p id="taskMeta"></p>
-    <label>状态 <select id="taskStatus"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></label>
-    <label>进度 (%) <input id="taskProgress" type="number" min="0" max="100" step="1" required></label>
+    <div id="plannerFields" class="planner-fields" hidden>
+      <label>任务编号 <input id="planTaskId" type="text" readonly></label>
+      <label>任务标题 <input id="planTaskTitle" type="text" maxlength="120"></label>
+      <label>负责人 <input id="planTaskOwner" type="text" maxlength="60"></label>
+      <label>所属里程碑 <select id="planTaskMilestone"></select></label>
+      <div class="field-row">
+        <label>计划开始 <input id="planTaskStart" type="date"></label>
+        <label>计划结束 <input id="planTaskEnd" type="date"></label>
+      </div>
+      <label>前置依赖 <input id="planTaskDeps" type="text" placeholder="如 T-1, T-2（无依赖留空）"></label>
+      <label>变更原因 <input id="planChangeReason" type="text" placeholder="必填：说明新增、拆分或改期原因"></label>
+    </div>
+    <div id="execFields">
+      <label>状态 <select id="taskStatus"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></label>
+      <label>进度 (%) <input id="taskProgress" type="number" min="0" max="100" step="1" required></label>
+    </div>
     <p id="taskMessage" role="status"></p>
-    <div class="dialog-actions"><button type="button" id="validatePlan">校验计划</button><button type="button" id="closeTask">取消</button><button type="submit">保存</button></div>
+    <div class="dialog-actions">
+      <button type="button" id="splitTaskBtn" hidden>拆分为两个子任务</button>
+      <button type="button" id="validatePlan">校验计划</button>
+      <button type="button" id="closeTask">取消</button>
+      <button type="submit">保存</button>
+    </div>
   </form>
 </dialog>
+
+<dialog id="milestoneDialog" class="task-dialog">
+  <form id="milestoneForm">
+    <h2>新建里程碑</h2>
+    <label>里程碑 ID <input id="msIdInput" type="text" placeholder="如 M5" required></label>
+    <label>里程碑名称 <input id="msNameInput" type="text" placeholder="如 生产环境灰度发布" required></label>
+    <label>目标日期 <input id="msDueInput" type="date" required></label>
+    <label>变更原因 <input id="msReasonInput" type="text" placeholder="必填：新增里程碑原因" required></label>
+    <p id="milestoneMessage" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeMilestone">取消</button>
+      <button type="submit">保存里程碑</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="projectDialog" class="task-dialog">
+  <form id="projectForm">
+    <h2>注册本地项目工作区</h2>
+    <label>项目代号 <input id="projIdInput" type="text" placeholder="英文/数字/连字符，如 payment-service" required></label>
+    <label>显示名称 <input id="projNameInput" type="text" placeholder="如 支付网关重构" required></label>
+    <label>仓库绝对路径 <input id="projRootInput" type="text" placeholder="如 D:/dev/payment-service" required></label>
+    <p id="projectMessage" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeProject">取消</button>
+      <button type="submit">注册并切换</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="webhookDialog" class="task-dialog webhook-dialog">
+  <form id="webhookForm">
+    <h2>Webhook 预警渠道配置</h2>
+    <p class="empty">支持飞书、钉钉、企业微信群机器人及通用 HTTPS JSON Webhook（仅限公网 HTTPS 地址）。</p>
+    <div id="webhookList" class="webhook-list"></div>
+    <button type="button" id="addWebhookChannelBtn">+ 添加渠道</button>
+    <p id="webhookDialogMsg" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeWebhook">取消</button>
+      <button type="submit">保存配置</button>
+    </div>
+  </form>
+</dialog>
+
 <script type="module" src="app.js"></script>
 </body>
 </html>

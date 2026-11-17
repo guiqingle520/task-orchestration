@@ -16,6 +16,7 @@
 - `milestoneId`: 可选，若传入（如 `'M4'`）则仅统计该里程碑下的任务；若为 `null` 或 `'all'` 则统计全部任务。
 
 #### 计算口径
+> 历史实际值仅以当前任务范围和完成日期重建，进行中任务的历史进度与范围变化不可还原；七日速率也是由此估算，并非历史快照的实测值。空范围不生成曲线或预测；今日早于计划开始日时速率为 0。
 1. **任务权重（工期当量）**：每个任务的权重 $\text{weight}(t) = \text{toDay}(t.\text{end}) - \text{toDay}(t.\text{start}) + 1$（单位：人日）。
 2. **时间轴范围 $[D_{\text{start}}, D_{\text{end}}]$**：
    - $D_{\text{start}} = \min_{t} \text{toDay}(t.\text{start})$
@@ -82,11 +83,13 @@
   ```json
   {
     "project": "task-orchestration",
+    "expectedRevision": "GET /api/plan 返回的 revision",
     "milestones": [...],
     "tasks": [...],
     "reason": "拆分 T-14 并调整 T-20 计划排期"
   }
   ```
+- 保存必须提交 `GET /api/plan` 返回的 `revision` 作为 `expectedRevision`；缺失或过期返回 409。当前 YAML 子集无法安全往返 front matter 注释或某些引号时会拒绝保存，正文保留。客户端应刷新后再重试。
 - **服务端校验规则**：
   1. 读取当前磁盘上的 `plan.md` 解析为 `before`，对比 `before` 与请求体：
      - 若存在任务增删、里程碑增删，或任何任务的 `title / owner / milestone / start / end / deps` 发生变化，则 `reason` 必须为非空字符串（去除首尾空白后长度 $\ge 2$），否则返回 `400 { message: "修改排期或任务结构必须填写变更原因" }`。
@@ -132,6 +135,7 @@
       ]
     }
     ```
+- 服务仅绑定 `127.0.0.1` 并检查 Host 与浏览器 Origin。默认项目 ID 为 `default`；注册表和渠道配置均不纳入 Git。注册路径会解析符号链接并要求计划文件位于仓库根目录内。接口保存时按项目隔离计划与 Git 历史，`/api/events` 仅发送对应项目事件。
 - `POST /api/projects`：
   - 请求体：`{ "id": "my-app", "name": "我的应用", "repoRoot": "D:/dev/my-app" }`（或直接传 `planPath`）。
   - 校验：路径必须存在且包含合法的 `plan.md`（通过 `parseFrontMatter` 与 `validate`），通过后写入 `plan/workspaces.json` 并挂载 `fs.watch`，返回 `200 { ok: true, project }`。
@@ -163,10 +167,12 @@
 #### 2) 配置文件与去重缓存
 - 渠道配置文件：`plan/webhooks.json`（已加入 `.gitignore`，支持配置多个 `{ id, name, type, url, enabled, autoAlert }`）。
 - 风险指纹去重：在内存中维护每个项目的已推送高危风险集合签名 `Set<string>`（格式 `${projectId}:${risk.id}:${risk.level}:${risk.text}`）。当 `plan.md` 变更且某渠道开启了 `autoAlert: true` 时，仅当出现**未推送过的新红色风险**时自动发送 HTTP POST。
+- 实现按项目和渠道分别去重，仅成功发送后记录；失败会在后续文件变更时重试，服务重启后去重记录清空。配置为本机明文文件，列表接口不会返回 URL，更新时空 URL 沿用同 ID 的原地址；不要将该文件提交或共享。仅允许 HTTPS 公网地址，不跟随重定向；签名类机器人需另行支持。
 
 #### 3) 接口契约
 - `GET /api/webhooks`：返回已配置的渠道列表（URL 脱敏展示，或本地返回完整结构供编辑）。
 - `POST /api/webhooks`：保存/更新 `plan/webhooks.json` 配置。
+- 配置接口读取/返回 `{ "channels": [...] }`；每个返回渠道的 `url` 为空字符串，`configured` 表示是否已保存地址。
 - `POST /api/notify?project=<id>`：
   - 请求体：`{ "channelId": "all" | "<id>", "mode": "risks" | "report" }`
   - 立即向目标 Webhook 渠道发送当前项目的风险预警或 Markdown 周报，返回 `{ ok: true, results: [{ id, status }] }`。

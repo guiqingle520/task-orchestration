@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeLoad, buildReport, buildReportSvg, comparePlans } from '../web/analysis.js';
+import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown } from '../web/analysis.js';
 
 test('snapshot comparison identifies additions, removals, schedule and progress changes', () => {
   const before = { tasks: [{ id: 'A', title: 'A', start: '2026-01-01', end: '2026-01-02', progress: 0, deps: [] }, { id: 'B', title: 'B' }] };
@@ -33,4 +33,34 @@ test('reports summarize the selected week and escape user content', () => {
   const svg = buildReportSvg(data, metrics, '2026-01-07');
   assert.match(svg, /&lt;Project&gt;/);
   assert.match(svg, /A \| B &amp; C/);
+});
+
+test('burndown reconstructs completed history, current progress and forecast by scope', () => {
+  const plan = { milestones: [{ id: 'M1', due: '2026-01-10' }, { id: 'M2', due: '2026-01-12' }], tasks: [
+    { id: 'A', milestone: 'M1', start: '2026-01-01', end: '2026-01-04', status: 'done', progress: 100, actualEnd: '2026-01-03' },
+    { id: 'B', milestone: 'M1', start: '2026-01-05', end: '2026-01-08', status: 'doing', progress: 50 },
+    { id: 'C', milestone: 'M2', start: '2026-01-08', end: '2026-01-09', status: 'todo', progress: 0 },
+  ] };
+  const result = computeBurndown(plan, '2026-01-07', 'M1');
+  assert.equal(result.totalScope, 8);
+  assert.equal(result.remainingScope, 2);
+  assert.equal(result.series[0].ideal, 7);
+  assert.equal(result.series[1].actual, 8);
+  assert.equal(result.series[2].actual, 4);
+  assert.equal(result.series.find((row) => row.date === '2026-01-08').actual, null);
+  assert.equal(result.velocity, 1);
+  assert.equal(result.forecastEnd, '2026-01-09');
+  assert.equal(result.slipDays, -1);
+  assert.equal(computeBurndown(plan, '2026-01-07', 'M2').forecastEnd, null);
+  assert.throws(() => computeBurndown(plan, '2026-01-07', 'missing'), /不存在/);
+});
+
+test('burndown handles completed and empty scopes without inventing velocity', () => {
+  const plan = { milestones: [{ id: 'M1', due: '2026-01-10' }, { id: 'M2', due: '2026-01-10' }], tasks: [{ id: 'A', milestone: 'M1', start: '2026-01-01', end: '2026-01-02', status: 'done', progress: 100, actualEnd: '2026-01-02' }] };
+  const done = computeBurndown(plan, '2026-01-05', 'M1');
+  assert.equal(done.forecastEnd, '2026-01-05');
+  assert.equal(done.slipDays, 0);
+  const empty = computeBurndown(plan, '2026-01-05', 'M2');
+  assert.equal(empty.forecastEnd, null);
+  assert.deepEqual(empty.series, []);
 });

@@ -1,5 +1,44 @@
 import { toDay, fromDay } from './metrics.js';
 
+// 历史值仅根据当前完成日期重建，不代表历史时点的真实进度或范围。
+export function computeBurndown(plan, todayStr, milestoneId = null) {
+  const today = toDay(todayStr);
+  if (!Number.isFinite(today) || fromDay(today) !== todayStr) throw new Error('日期无效');
+  const scope = milestoneId && milestoneId !== 'all' ? milestoneId : 'all';
+  const milestone = scope === 'all' ? null : plan.milestones.find((item) => item.id === scope);
+  if (scope !== 'all' && !milestone) throw new Error('里程碑不存在');
+  const tasks = plan.tasks.filter((task) => scope === 'all' || task.milestone === scope);
+  if (!tasks.length) return { milestoneId: scope, startDate: null, endDate: null, totalScope: 0, remainingScope: 0, velocity: 0, forecastEnd: null, slipDays: null, series: [] };
+  const items = tasks.map((task) => {
+    const start = toDay(task.start), end = toDay(task.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || fromDay(start) !== task.start || fromDay(end) !== task.end || end < start) throw new Error(`任务日期无效: ${task.id}`);
+    return { task, start, end, weight: end - start + 1 };
+  });
+  const start = Math.min(...items.map((item) => item.start));
+  const due = scope === 'all' ? plan.milestones.map((item) => toDay(item.due)) : [toDay(milestone.due)];
+  const end = Math.max(...items.map((item) => item.end), ...due);
+  if (!Number.isFinite(end)) throw new Error('里程碑日期无效');
+  const totalScope = items.reduce((sum, item) => sum + item.weight, 0);
+  const actualAt = (day) => items.reduce((sum, item) => {
+    const { task, weight } = item;
+    if (task.status === 'done' && task.actualEnd && toDay(task.actualEnd) <= day) return sum;
+    if (day === today && task.status !== 'done') return sum + weight * (1 - Math.max(0, Math.min(100, task.progress || 0)) / 100);
+    return sum + weight;
+  }, 0);
+  const remainingScope = actualAt(today);
+  const startWindow = Math.max(start, today - 7);
+  const window = today - startWindow;
+  const rawVelocity = window > 0 ? Math.max(0, actualAt(startWindow) - remainingScope) / window : 0;
+  const velocity = Math.round(rawVelocity * 100) / 100;
+  const finish = remainingScope === 0 ? today : rawVelocity > 0 ? today + Math.ceil(remainingScope / rawVelocity) : null;
+  const series = [];
+  for (let day = start; day <= Math.max(end, today); day++) {
+    const ideal = items.reduce((sum, item) => sum + Math.max(0, item.end - Math.max(day, item.start - 1)), 0);
+    series.push({ date: fromDay(day), ideal, actual: day <= today ? actualAt(day) : null });
+  }
+  return { milestoneId: scope, startDate: fromDay(start), endDate: fromDay(end), totalScope, remainingScope, velocity, forecastEnd: finish === null ? null : fromDay(finish), slipDays: finish === null ? null : remainingScope === 0 ? 0 : finish - end, series };
+}
+
 // 快照按任务 ID 对比；返回变化值而非修改任何计划。
 export function comparePlans(before, after) {
   const old = new Map(before.tasks.map((task) => [task.id, task]));

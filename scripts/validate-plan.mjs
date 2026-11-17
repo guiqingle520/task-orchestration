@@ -46,6 +46,47 @@ export function parseFrontMatter(text) {
   return data;
 }
 
+// 序列化当前支持的 YAML 子集；无法可靠往返时拒绝写入。
+export function serializePlanMarkdown(data, rawMarkdown, changelogEntry = null) {
+  const match = rawMarkdown.match(/^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---)(?=\r?\n|$)/);
+  if (!match) throw new Error('计划缺少 YAML front matter');
+  if (match[2].split(/\r?\n/).some((line) => /^\s*#/.test(line) || /\s+#/.test(line))) throw new Error('front matter 含注释，无法安全重写');
+  const eol = match[1].includes('\r\n') ? '\r\n' : '\n';
+  const scalar = (value) => {
+    if (value == null) return 'null';
+    if (Array.isArray(value)) return `[${value.map(scalar).join(', ')}]`;
+    if (typeof value === 'number') return String(value);
+    if (typeof value !== 'string' || /[\r\n]/.test(value)) throw new Error('字段值无法序列化');
+    if (!value || /[\[\],:#'"{}]/.test(value) || /^\s|\s$/.test(value) || /^(?:null|~|-?\d+(?:\.\d+)?)$/.test(value)) {
+      if (value.includes('"') || /\s+#/.test(value)) throw new Error('字段含不支持的引号或注释字符');
+      return `"${value}"`;
+    }
+    return value;
+  };
+  const milestoneFields = ['id', 'name', 'due'];
+  const taskFields = ['id', 'title', 'owner', 'milestone', 'start', 'end', 'deps', 'status', 'progress', 'actualStart', 'actualEnd'];
+  const lines = [`project: ${scalar(data.project)}`, 'milestones:'];
+  for (const [key, fields] of [['milestones', milestoneFields], ['tasks', taskFields]]) {
+    if (key === 'tasks') lines.push('tasks:');
+    if (!Array.isArray(data[key])) throw new Error(`${key} 必须是列表`);
+    for (const item of data[key]) {
+      if (Object.keys(item).some((field) => !fields.includes(field))) throw new Error(`${key} 包含不支持的字段`);
+      fields.forEach((field, index) => lines.push(`${index ? '    ' : '  - '}${field}: ${scalar(item[field])}`));
+    }
+  }
+  const serialized = `${match[1]}${lines.join(eol)}${match[3]}`;
+  const parsed = parseFrontMatter(serialized);
+  const normalized = { project: data.project, milestones: data.milestones.map((item) => Object.fromEntries(milestoneFields.map((field) => [field, item[field] ?? null]))), tasks: data.tasks.map((item) => Object.fromEntries(taskFields.map((field) => [field, item[field] ?? null]))) };
+  if (JSON.stringify(parsed) !== JSON.stringify(normalized)) throw new Error('字段无法安全往返');
+  let body = rawMarkdown.slice(match[0].length);
+  if (changelogEntry) {
+    if (/[\r\n]/.test(changelogEntry)) throw new Error('变更原因必须为单行');
+    const now = new Date(), today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    body = body.replace(/\s*$/, '') + `${eol}${eol}变更记录:${today} planner ${changelogEntry}${eol}`;
+  }
+  return serialized + body;
+}
+
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 const STATUS = ['todo', 'doing', 'done', 'blocked'];
 

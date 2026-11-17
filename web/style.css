@@ -101,3 +101,22 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .simulation-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin:8px 0}.simulation-controls span{color:var(--m)}.simulation-controls select{max-width:240px}.simulation-controls input[type=number]{width:65px}.simulation-controls button,.simulation-controls select,.simulation-controls input[type=number]{font:inherit;border:1px solid var(--b);border-radius:5px;padding:4px;background:#fff}.simulation-controls button{cursor:pointer}.sim-result{font-size:12px;color:var(--acc);margin-bottom:8px}.sim-result:empty{display:none}.bar.simulation{background:#2563eb;pointer-events:auto;cursor:ew-resize;touch-action:none;z-index:3}.bar.simulation.critical{outline:2px solid #dc2626}
 .snapshot-controls{display:flex;gap:6px;flex-wrap:wrap}.snapshot-controls button,.snapshot-controls select{font:inherit;font-size:12px;border:1px solid var(--b);border-radius:5px;background:#fff;padding:4px}.snapshot-controls button{cursor:pointer}.snapshot-result{font-size:12px;margin-top:8px;overflow-wrap:anywhere}.snapshot-result ul{padding-left:18px}
 .load-suggestions{font-size:12px;padding-left:18px;color:var(--m)}
+/* M4: 多项目、燃尽图、可视化规划器、Webhook 渠道 */
+.proj-select,.scope-select{font:inherit;font-size:12px;border:1px solid var(--b);border-radius:6px;padding:3px 8px;background:#fff;color:var(--t);cursor:pointer}
+.btn-sm{font:inherit;font-size:12px;border:1px solid var(--b);border-radius:6px;padding:3px 8px;background:#fff;color:var(--t);cursor:pointer}
+.btn-sm:hover,.snapshot-controls button:hover{background:var(--bg)}
+.planner-toggle{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--t);font-weight:500;background:#eff6ff;border:1px solid #bfdbfe;padding:2px 8px;border-radius:6px;cursor:pointer}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.card-head h2{margin:0}
+.burndown-summary{font-size:12px;color:var(--m);margin-bottom:6px;line-height:1.4}
+.burndown-summary b{color:var(--t)}
+.burndown-chart svg{display:block;width:100%;height:auto;border:1px solid var(--b);border-radius:6px;background:#fcfdff}
+.planner-fields input[type=text],.planner-fields input[type=date],.planner-fields select{width:100%;margin:4px 0 0}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bar.plan.draggable{pointer-events:auto;cursor:grab;touch-action:none;z-index:2;border:1px solid #64748b}
+.bar.plan.draggable:active{cursor:grabbing}
+.webhook-dialog{width:min(620px,94vw)}
+.webhook-list{display:grid;gap:10px;margin:10px 0;max-height:320px;overflow-y:auto}
+.webhook-item{border:1px solid var(--b);border-radius:8px;padding:10px;background:var(--bg);display:grid;gap:6px;font-size:12px}
+.webhook-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.webhook-row input[type=text],.webhook-row input[type=url]{flex:1;min-width:140px;margin:0}

@@ -197,10 +197,10 @@ tasks:
     start: 2026-11-23
     end: 2026-11-25
     deps: [T-3]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-18
     title: 渲染 SVG 燃尽图与速率预测卡片并支持按里程碑筛选
     owner: antigravity
@@ -208,10 +208,10 @@ tasks:
     start: 2026-11-30
     end: 2026-12-02
     deps: [T-4, T-17]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-19
     title: 实现 plan.md 结构化序列化回写与规划者变更原因审计接口
     owner: codex
@@ -219,10 +219,10 @@ tasks:
     start: 2026-11-26
     end: 2026-11-27
     deps: [T-1, T-2]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-20
     title: 构建可视化规划器界面支持新增拆分任务与甘特拖拽改期
     owner: antigravity
@@ -230,10 +230,10 @@ tasks:
     start: 2026-12-03
     end: 2026-12-04
     deps: [T-9, T-19]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-21
     title: 实现多项目工作区注册表与多目录监听服务接口
     owner: codex
@@ -241,10 +241,10 @@ tasks:
     start: 2026-11-30
     end: 2026-12-02
     deps: [T-10]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-22
     title: 新增顶栏多项目切换器与本地仓库路径注册弹窗
     owner: antigravity
@@ -252,10 +252,10 @@ tasks:
     start: 2026-12-07
     end: 2026-12-09
     deps: [T-20, T-21]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-23
     title: 实现飞书钉钉企微通用 Webhook 适配器与风险指纹去重推送
     owner: codex
@@ -263,10 +263,10 @@ tasks:
     start: 2026-12-03
     end: 2026-12-04
     deps: [T-3, T-21]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
   - id: T-24
     title: 新增 Webhook 渠道配置弹窗与风险周报一键推送交互
     owner: antigravity
@@ -274,10 +274,10 @@ tasks:
     start: 2026-12-10
     end: 2026-12-11
     deps: [T-22, T-23]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-17
+    actualEnd: 2026-11-17
 ---
 
 # 计划说明
