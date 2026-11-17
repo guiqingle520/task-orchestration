@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务时间线驾驶舱</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><h1>任务时间线驾驶舱</h1><span id="project" class="proj"></span><span id="pill" class="pill"></span></div>
+  <div class="ctrl">
+    <label>今天 <input type="date" id="today"></label>
+    <button id="reset" title="恢复为真实今天">重置</button>
+    <button id="syncGit" title="扫描 git commit 历史中的任务 ID 并同步进度">同步 Git</button>
+    <span class="live"><i></i><span id="updated">连接中…</span></span>
+  </div>
+</header>
+<div id="errors" class="errors" hidden></div>
+<section id="kpis" class="kpis"></section>
+<main>
+  <section class="card gantt-card">
+    <h2>时间线<small>计划 vs 实际</small></h2>
+    <div class="legend">
+      <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际(深色=完成度)</span>
+      <span><i class="sw slip"></i>预计延期</span><span><i class="sw crit">★</i>关键路径</span>
+      <span><i class="sw ms"></i>里程碑</span><span><i class="sw today"></i>今天</span>
+    </div>
+    <div id="gantt"></div>
+    <div id="detail" class="detail"></div>
+  </section>
+  <aside>
+    <section class="card"><h2>里程碑</h2><div id="milestones"></div></section>
+    <section class="card"><h2>风险预警<small>点击定位任务</small></h2><ul id="risks" class="risks"></ul></section>
+    <section class="card"><h2>人员负载<small>每周未完成任务数</small></h2><div id="load"></div></section>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

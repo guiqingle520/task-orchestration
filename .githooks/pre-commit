@@ -1,0 +1,6 @@
+#!/bin/sh
+# 提交前校验 plan.md,不通过则阻止提交
+node scripts/validate-plan.mjs || {
+  echo "提交被阻止: 请修复 plan/plan.md 后重试"
+  exit 1
+}

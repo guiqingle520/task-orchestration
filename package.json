@@ -1,0 +1,10 @@
+{
+  "name": "task-orchestration",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "plan:check": "node scripts/validate-plan.mjs",
+    "plan:sync": "node scripts/sync-git-progress.mjs",
+    "start": "node server/server.mjs"
+  }
+}

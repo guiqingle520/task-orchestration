@@ -1,0 +1,7 @@
+#!/bin/sh
+# 根据 commit message 中的任务 ID(如 "T-3 50%"、"done T-3"、"feat(T-3): ...")自动更新 plan/plan.md 并校验
+node scripts/sync-git-progress.mjs --msg-file "$1" || {
+  echo "提交被阻止: 根据 commit message 更新 plan/plan.md 失败"
+  exit 1
+}
+git add plan/plan.md 2>/dev/null || true
