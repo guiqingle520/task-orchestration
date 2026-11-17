@@ -90,7 +90,7 @@ tasks:
     actualEnd: 2026-11-17
   - id: T-8
     title: 甘特图缩放与视图切换(日/周/月跨度与多里程碑折叠)
-    owner: dev
+    owner: antigravity
     milestone: M2
     start: 2026-11-21
     end: 2026-11-24
@@ -101,7 +101,7 @@ tasks:
     actualEnd: null
   - id: T-9
     title: 任务交互抽屉(查看详情、直接修改状态与手工触发校验)
-    owner: dev
+    owner: antigravity
     milestone: M2
     start: 2026-11-25
     end: 2026-11-27
@@ -112,22 +112,33 @@ tasks:
     actualEnd: null
   - id: T-10
     title: 本地文件变更监听(fs.watch 实现 plan.md 秒级 SSE/热更新)
-    owner: dev
+    owner: codex
     milestone: M2
-    start: 2026-11-28
-    end: 2026-11-30
+    start: 2026-11-21
+    end: 2026-11-24
     deps: [T-2]
     status: todo
     progress: 0
     actualStart: null
     actualEnd: null
   - id: T-11
-    title: 模拟演练模式(拖拽模拟延期与关键路径连锁传导推演)
-    owner: dev
+    title: 模拟演练推演算法(metrics.js 纯函数:模拟延期与关键路径连锁传导)
+    owner: codex
     milestone: M2
-    start: 2026-12-01
-    end: 2026-12-04
-    deps: [T-9, T-10]
+    start: 2026-11-25
+    end: 2026-11-27
+    deps: [T-3, T-10]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-15
+    title: 模拟演练界面(拖拽模拟延期并展示推演结果)
+    owner: antigravity
+    milestone: M2
+    start: 2026-11-30
+    end: 2026-12-03
+    deps: [T-9, T-11]
     status: todo
     progress: 0
     actualStart: null
@@ -138,7 +149,7 @@ tasks:
     milestone: M3
     start: 2026-12-05
     end: 2026-12-08
-    deps: [T-11]
+    deps: [T-15]
     status: todo
     progress: 0
     actualStart: null
@@ -175,3 +186,4 @@ tasks:
 变更记录:2026-11-17 规划者新增 T-6(生成计划技能),依据用户需求。
 变更记录:2026-11-17 规划者新增 T-7(git commit 自动更新任务进度),依据用户需求。
 变更记录:2026-11-17 规划者增量规划后续功能(M2 交互强化与自动化、M3 多维分析与报告),新增 T-8 ~ T-14。
+变更记录:2026-11-17 规划者按用户确认将 M2 并行分工:T-8/T-9 归 antigravity,T-10 归 codex 并提前至 11-21 开始(仅依赖 T-2);T-11 拆为算法(codex)与新增 T-15 界面(antigravity),T-12 改依赖 T-15。
