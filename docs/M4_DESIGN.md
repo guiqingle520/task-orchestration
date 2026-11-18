@@ -89,7 +89,7 @@
     "reason": "拆分 T-14 并调整 T-20 计划排期"
   }
   ```
-- 保存必须提交 `GET /api/plan` 返回的 `revision` 作为 `expectedRevision`；缺失或过期返回 409。当前 YAML 子集无法安全往返 front matter 注释或某些引号时会拒绝保存，正文保留。客户端应刷新后再重试。
+- 保存必须提交打开编辑弹窗（或开始拖拽）时读取的 `revision` 作为 `expectedRevision`；缺失或过期返回 409。收到冲突后关闭并重新打开弹窗，再应用改动。整份计划无法安全往返 front matter 注释或某些引号时会拒绝保存，正文保留。
 - **服务端校验规则**：
   1. 读取当前磁盘上的 `plan.md` 解析为 `before`，对比 `before` 与请求体：
      - 若存在任务增删、里程碑增删，或任何任务的 `title / owner / milestone / start / end / deps` 发生变化，则 `reason` 必须为非空字符串（去除首尾空白后长度 $\ge 2$），否则返回 `400 { message: "修改排期或任务结构必须填写变更原因" }`。
@@ -165,12 +165,12 @@
 - `generic`（通用 JSON）：`{ project, today, summary, risks, markdown, timestamp }`
 
 #### 2) 配置文件与去重缓存
-- 渠道配置文件：`plan/webhooks.json`（已加入 `.gitignore`，支持配置多个 `{ id, name, type, url, enabled, autoAlert }`）。
+- 渠道配置文件：`plan/webhooks.json`（已加入 `.gitignore`，支持配置多个 `{ id, name, type, url, enabled, autoAlert, projects }`）。`projects` 是允许发送的已注册项目 ID 列表，同时限制手动和自动推送；空列表和未配置该字段的旧渠道均不发送，现有 URL 保留。
 - 风险指纹去重：在内存中维护每个项目的已推送高危风险集合签名 `Set<string>`（格式 `${projectId}:${risk.id}:${risk.level}:${risk.text}`）。当 `plan.md` 变更且某渠道开启了 `autoAlert: true` 时，仅当出现**未推送过的新红色风险**时自动发送 HTTP POST。
 - 实现按项目和渠道分别去重，仅成功发送后记录；失败会在后续文件变更时重试，服务重启后去重记录清空。配置为本机明文文件，列表接口不会返回 URL，更新时空 URL 沿用同 ID 的原地址；不要将该文件提交或共享。仅允许 HTTPS 公网地址，不跟随重定向；签名类机器人需另行支持。
 
 #### 3) 接口契约
-- `GET /api/webhooks`：返回已配置的渠道列表（URL 脱敏展示，或本地返回完整结构供编辑）。
+- `GET /api/webhooks`：返回已配置的渠道列表及允许发送的项目，不返回真实 URL。
 - `POST /api/webhooks`：保存/更新 `plan/webhooks.json` 配置。
 - 配置接口读取/返回 `{ "channels": [...] }`；每个返回渠道的 `url` 为空字符串，`configured` 表示是否已保存地址。
 - `POST /api/notify?project=<id>`：

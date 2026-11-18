@@ -66,15 +66,19 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
     ],
   };
 
+  let defaultPlan = samplePlan, revision = 'rev-1', pendingSecond;
   const calls = [];
   globalThis.fetch = async (url, opts = {}) => {
     calls.push({ url, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
     if (url.startsWith('/api/plan/save')) {
+      if (JSON.parse(opts.body).expectedRevision !== revision) return { ok: false, status: 409, json: async () => ({ message: '计划已变化' }) };
       return { ok: true, json: async () => ({ ok: true, data: samplePlan, revision: 'rev-2' }) };
     }
     if (url.startsWith('/api/plan')) {
-      return { ok: true, json: async () => ({ data: samplePlan, revision: 'rev-1', commits: {}, errors: [] }) };
+      if (url.endsWith('project=second') && pendingSecond) return pendingSecond;
+      return { ok: true, json: async () => ({ data: defaultPlan, revision, commits: {}, errors: [] }) };
     }
+    if (url === '/api/webhooks') return { ok: true, json: async () => ({ channels: [{ id: 'ch-1', name: '群机器人', type: 'generic', enabled: true, projects: ['default'] }] }) };
     if (url === '/api/projects') {
       return {
         ok: true,
@@ -120,14 +124,49 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
   assert.equal(saveCall.body.expectedRevision, 'rev-1');
   assert.equal(saveCall.body.reason, '补充前端自动化验证任务');
 
+  const click = (selector, target) => docListeners.click[0]({ target: { closest: (sel) => sel === selector ? target : null } });
+  await click('[data-id]', { dataset: { id: 'T-18' } });
+  await click('[data-edit-task]', {});
+  assert.equal(elements.get('taskProgress').value, 50);
+  defaultPlan = structuredClone(samplePlan);
+  defaultPlan.tasks[1].progress = 80;
+  revision = 'rev-2';
+  await elements.get('today').dispatch('change');
+  elements.get('planChangeReason').value = '调整计划';
+  await elements.get('taskForm').dispatch('submit');
+  const stale = calls.filter((c) => c.url.startsWith('/api/plan/save')).at(-1);
+  assert.equal(stale.url, '/api/plan/save?project=default');
+  assert.equal(stale.body.expectedRevision, 'rev-1');
+  assert.equal(stale.body.tasks[1].progress, 50);
+  assert.match(elements.get('taskMessage').textContent, /重新打开/);
+
   // 3. T-22: 验证多项目切换器加载与切换
   assert.match(elements.get('projectSelect').innerHTML, /支付网关/);
+  let finishLoad;
+  pendingSecond = new Promise((resolve) => { finishLoad = resolve; });
   elements.get('projectSelect').value = 'second';
-  await elements.get('projectSelect').dispatch('change');
+  const switching = elements.get('projectSelect').dispatch('change');
   assert.ok(sseUrls.includes('/api/events?project=second'));
   assert.ok(calls.some((c) => c.url === '/api/plan?project=second'));
+  assert.equal(elements.get('gantt').innerHTML, '');
+  assert.equal(elements.get('taskDialog').open, false);
+  assert.equal(elements.get('pushRisksBtn').disabled, true);
+  const requestsDuringSwitch = calls.length;
+  await elements.get('taskForm').dispatch('submit');
+  await elements.get('pushRisksBtn').dispatch('click');
+  assert.equal(calls.length, requestsDuringSwitch);
+  finishLoad({ ok: false, json: async () => ({ message: '计划找不到' }) });
+  await switching;
+  assert.equal(elements.get('gantt').innerHTML, '');
+  assert.equal(elements.get('syncGit').disabled, true);
+  pendingSecond = null;
+  await elements.get('today').dispatch('change');
+  assert.equal(elements.get('pushRisksBtn').disabled, false);
 
   // 4. T-24: 验证一键推送预警与周报
+  await elements.get('configWebhookBtn').dispatch('click');
+  assert.match(elements.get('webhookList').innerHTML, /data-wh-project value="default" checked/);
+  assert.doesNotMatch(elements.get('webhookList').innerHTML, /data-wh-project value="second" checked/);
   await elements.get('pushRisksBtn').dispatch('click');
   assert.match(elements.get('webhookStatus').textContent, /推送完成：成功 1\/1/);
 });

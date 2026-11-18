@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, cp, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { mkdtemp, cp, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 test('plan changes and atomic replacements reach SSE clients and reconnects', { timeout: 15000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'plan-live-'));
-  for (const path of ['server', 'scripts', 'web', 'plan', 'package.json']) {
+  for (const path of ['server', 'scripts', 'web', 'package.json']) {
     await cp(resolve(path), join(root, path), { recursive: true });
   }
   const socket = createServer();
@@ -30,6 +30,16 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
     try { response = await fetch(`${base}/api/plan`); break; } catch { await delay(100); }
   }
   assert.ok(response, 'server started');
+  assert.match((await response.json()).errors.join(' '), /找不到/);
+  assert.equal((await fetch(base)).status, 200);
+  const list = async () => (await (await fetch(`${base}/api/projects`)).json()).projects;
+  assert.equal((await list())[0].health, 'unavailable');
+  await mkdir(join(root, 'plan'));
+  const file = join(root, 'plan', 'plan.md');
+  await writeFile(file, '---\nproject: broken\ninvalid YAML\n---\n');
+  assert.equal((await list())[0].health, 'unavailable');
+  const original = await readFile(resolve('plan/plan.md'), 'utf8');
+  await writeFile(file, original);
   const stream = await fetch(`${base}/api/events`, { signal: controller.signal });
   assert.match(stream.headers.get('content-type'), /text\/event-stream/);
   const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -46,8 +56,6 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
     return event;
   }
   assert.match(await nextEvent(), /event: plan-change\ndata: connected/);
-  const file = join(root, 'plan', 'plan.md');
-  const original = await readFile(file, 'utf8');
   await writeFile(file, original.replace('project: task-orchestration', 'project: changed'));
   assert.match(await nextEvent(), /event: plan-change\ndata: changed/);
   assert.equal((await (await fetch(`${base}/api/plan`)).json()).data.project, 'changed');
@@ -81,7 +89,7 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   const secondRoot = join(root, 'fixture-project');
   await cp(join(root, 'plan'), join(secondRoot, 'plan'), { recursive: true });
   const secondFile = join(secondRoot, 'plan', 'plan.md');
-  await writeFile(secondFile, original.replace('project: task-orchestration', 'project: second'));
+  await writeFile(secondFile, original.replace('project: task-orchestration', 'project: second').replace(/^(  - id: )(T-\d+)/m, '$1"$2" # keep the ID comment'));
   const register = await fetch(`${base}/api/projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'second', name: 'Second', repoRoot: secondRoot }) });
   assert.equal(register.status, 200, await register.clone().text());
   assert.equal((await (await fetch(`${base}/api/projects`)).json()).projects.length, 2);
@@ -94,6 +102,7 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   const updatedSecond = await fetch(`${base}/api/task?project=second`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: secondTask.id, expected: expectedSecond, status: 'doing', progress: 35 }) });
   assert.equal(updatedSecond.status, 200);
   assert.equal((await (await fetch(`${base}/api/plan?project=second`)).json()).data.tasks[0].progress, 35);
+  assert.match(await readFile(secondFile, 'utf8'), /"T-\d+" # keep the ID comment/);
   assert.equal((await (await fetch(`${base}/api/plan`)).json()).data.tasks[0].progress, 20);
   await delay(250);
   const firstController = new AbortController(), secondController = new AbortController();
@@ -105,11 +114,14 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   assert.match(new TextDecoder().decode((await secondEvents.read()).value), /event: plan-change/);
   assert.equal(await Promise.race([firstEvents.read().then(() => 'unexpected'), delay(400).then(() => 'isolated')]), 'isolated');
   assert.equal((await fetch(`${base}/api/projects`, { headers: { origin: 'https://unrelated.example' } })).status, 403);
-  const configResponse = await fetch(`${base}/api/webhooks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channels: [{ id: 'test', name: 'Test', type: 'generic', url: 'https://example.com/secret', enabled: false, autoAlert: false }] }) });
+  const configure = (projects) => fetch(`${base}/api/webhooks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channels: [{ id: 'test', name: 'Test', type: 'generic', url: 'https://example.com/secret', enabled: false, autoAlert: false, projects }] }) });
+  assert.equal((await configure(['unknown'])).status, 400);
+  const configResponse = await configure(['default']);
   assert.equal(configResponse.status, 200);
   const channels = (await (await fetch(`${base}/api/webhooks`)).json()).channels;
   assert.equal(channels[0].url, '');
   assert.equal(channels[0].configured, true);
+  assert.deepEqual(channels[0].projects, ['default']);
   assert.equal(JSON.stringify(channels).includes('secret'), false);
   assert.equal((await fetch(`${base}/api/notify?project=second`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channelId: 'test', mode: 'report' }) })).status, 400);
 });
@@ -126,7 +138,7 @@ test('browser refreshes the plan on SSE events', async (t) => {
     addEventListener() {},
   };
   let requests = 0;
-  globalThis.fetch = async () => { requests++; return { json: async () => ({ errors: [] }) }; };
+  globalThis.fetch = async (url) => { if (url === '/api/plan') requests++; return { json: async () => ({ errors: [] }) }; };
   globalThis.setInterval = () => 0;
   let events;
   globalThis.EventSource = class {

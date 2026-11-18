@@ -70,19 +70,22 @@ export function createWebhookService(root, sender = sendWebhook) {
     if (!Array.isArray(data)) throw new Error('Webhook 配置无效');
     return data;
   };
-  const list = () => read().map(({ url, ...channel }) => ({ ...channel, url: '', configured: Boolean(url) }));
-  function save(channels) {
+  const list = () => read().map(({ url, projects, ...channel }) => ({ ...channel, projects: Array.isArray(projects) ? projects : [], url: '', configured: Boolean(url) }));
+  // validProjectIds 传入时,渠道里引用的项目必须已注册
+  function save(channels, validProjectIds = null) {
     if (!Array.isArray(channels) || channels.length > 50) throw new Error('渠道配置无效');
     const previous = new Map(read().map((channel) => [channel.id, channel]));
     const ids = new Set();
     const normalized = channels.map((channel) => {
-      const { id, name, type, enabled, autoAlert } = channel;
+      const { id, name, type, enabled, autoAlert, projects } = channel;
       if (typeof id !== 'string' || !/^[\w-]{1,80}$/.test(id) || ids.has(id) || typeof name !== 'string' || !name.trim() || name.length > 100 || !['feishu', 'dingtalk', 'wecom', 'generic'].includes(type) || typeof enabled !== 'boolean' || typeof autoAlert !== 'boolean') throw new Error('渠道配置字段无效');
+      if (!Array.isArray(projects) || projects.length > 100 || projects.some((item) => typeof item !== 'string' || !/^[\w-]{1,80}$/.test(item))) throw new Error('渠道必须显式选择允许发送的项目');
+      if (validProjectIds && projects.some((item) => !validProjectIds.includes(item))) throw new Error('渠道引用了未注册的项目');
       ids.add(id);
       const url = channel.url || previous.get(id)?.url;
       if (typeof url !== 'string' || url.length > 4096) throw new Error('Webhook 地址无效');
       parseUrl(url);
-      return { id, name: name.trim(), type, url, enabled, autoAlert };
+      return { id, name: name.trim(), type, url, enabled, autoAlert, projects: [...new Set(projects)] };
     });
     const tmp = `${file}.${randomUUID()}.tmp`;
     try { writeFileSync(tmp, JSON.stringify(normalized, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' }); renameSync(tmp, file); }
@@ -90,8 +93,9 @@ export function createWebhookService(root, sender = sendWebhook) {
     return list();
   }
   async function notify(projectId, event, channelId = 'all', auto = false) {
-    const channels = read().filter((channel) => channel.enabled && (!auto || channel.autoAlert) && (channelId === 'all' || channel.id === channelId));
-    if (channelId !== 'all' && !channels.length) throw new Error('渠道不存在或未启用');
+    // 渠道只接收显式授权项目的消息;没有 projects 的旧配置视为不接收任何项目
+    const channels = read().filter((channel) => channel.enabled && Array.isArray(channel.projects) && channel.projects.includes(projectId) && (!auto || channel.autoAlert) && (channelId === 'all' || channel.id === channelId));
+    if (channelId !== 'all' && !channels.length) throw new Error('渠道不存在、未启用或未授权该项目');
     if (!auto && !channels.length) return { ok: false, results: [] };
     const results = [];
     for (const channel of channels) {

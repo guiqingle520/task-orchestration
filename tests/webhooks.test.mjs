@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildWebhookPayload, createWebhookService, isPublicAddress } from '../server/webhooks.mjs';
@@ -27,7 +27,14 @@ test('webhook config masks URLs and automatic dedup retries failures per channel
   t.after(() => rm(root, { recursive: true, force: true }));
   let calls = 0, fail = true;
   const service = createWebhookService(root, async () => { calls++; if (fail) throw new Error('secret URL'); });
-  const channel = { id: 'a', name: 'A', type: 'generic', url: 'https://example.com/secret', enabled: true, autoAlert: true };
+  const legacy = { id: 'a', name: 'A', type: 'generic', url: 'https://example.com/secret', enabled: true, autoAlert: true };
+  await writeFile(join(root, 'plan', 'webhooks.json'), JSON.stringify([legacy]));
+  assert.equal(service.list()[0].configured, true);
+  assert.deepEqual(service.list()[0].projects, []);
+  assert.deepEqual((await service.notify('p1', event, 'all', true)).results, []);
+  assert.deepEqual((await service.notify('p1', event)).results, []);
+  assert.equal(calls, 0);
+  const channel = { ...legacy, projects: ['p1', 'p3'] };
   const visible = service.save([channel]);
   assert.equal(visible[0].url, '');
   assert.equal(visible[0].configured, true);
@@ -38,6 +45,9 @@ test('webhook config masks URLs and automatic dedup retries failures per channel
   fail = false;
   assert.deepEqual((await service.notify('p1', event, 'all', true)).results, [{ id: 'a', status: 'sent' }]);
   assert.deepEqual((await service.notify('p1', event, 'all', true)).results, []);
-  await service.notify('p2', event, 'all', true);
+  assert.deepEqual((await service.notify('p2', event, 'all', true)).results, []);
+  assert.deepEqual((await service.notify('p2', event)).results, []);
+  await assert.rejects(service.notify('p2', event, 'a'));
+  assert.deepEqual((await service.notify('p3', event, 'all', true)).results, [{ id: 'a', status: 'sent' }]);
   assert.equal(calls, 3);
 });

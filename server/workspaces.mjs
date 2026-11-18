@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { parseFrontMatter, validate } from '../scripts/validate-plan.mjs';
@@ -6,7 +6,11 @@ import { parseFrontMatter, validate } from '../scripts/validate-plan.mjs';
 export function createWorkspaces(root) {
   const configPath = join(root, 'plan', 'workspaces.json');
   const defaultPlan = join(root, 'plan', 'plan.md');
-  const fallback = () => ({ default: 'default', projects: [{ id: 'default', name: parseFrontMatter(readFileSync(defaultPlan, 'utf8'))?.project || '默认项目', repoRoot: root, planPath: defaultPlan }] });
+  const defaultName = () => {
+    // 默认计划缺失或无法解析时不能让服务启动失败,该项目之后会被标记为不可用
+    try { return parseFrontMatter(readFileSync(defaultPlan, 'utf8'))?.project || '默认项目'; } catch { return '默认项目'; }
+  };
+  const fallback = () => ({ default: 'default', projects: [{ id: 'default', name: defaultName(), repoRoot: root, planPath: defaultPlan }] });
   function read() {
     if (!existsSync(configPath)) return fallback();
     const data = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -17,6 +21,8 @@ export function createWorkspaces(root) {
     const data = read();
     const project = data.projects.find((item) => item.id === (id || data.default));
     if (!project) throw new Error('项目不存在');
+    // 计划文件尚不存在时没有可读写内容,交给调用方报告“不可用”,不在这里抛错
+    if (!existsSync(project.planPath)) return project;
     const canonicalRoot = realpathSync(project.repoRoot), canonicalPlan = realpathSync(project.planPath);
     const rel = relative(canonicalRoot, canonicalPlan);
     if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) || canonicalPlan !== project.planPath) throw new Error('项目路径已改变，请重新注册');
@@ -39,6 +45,7 @@ export function createWorkspaces(root) {
     if (registry.projects.some((item) => item.id === id || item.planPath === file)) throw new Error('项目 ID 或计划路径已存在');
     const project = { id, name, repoRoot, planPath: file };
     registry.projects.push(project);
+    mkdirSync(dirname(configPath), { recursive: true });
     const temporary = `${configPath}.${randomUUID()}.tmp`;
     try { writeFileSync(temporary, JSON.stringify(registry, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 }); renameSync(temporary, configPath); }
     finally { if (existsSync(temporary)) unlinkSync(temporary); }

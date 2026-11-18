@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
-import { getTaskCommitsMap, readGitCommits, applyCommitToTask, updatePlanMarkdown } from '../scripts/sync-git-progress.mjs';
+import { getTaskCommitsMap, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { createWorkspaces } from './workspaces.mjs';
 import { createWebhookService } from './webhooks.mjs';
 import { compute } from '../web/metrics.js';
@@ -74,7 +74,9 @@ function syncFromGit(project) {
   if (touched.length) {
     const errs = validate(data);
     if (errs.length) return { ok: false, message: errs.join('; ') };
-    writeFileSync(planFile, updatePlanMarkdown(raw, data.tasks), 'utf8');
+    const output = updatePlanMarkdown(raw, data.tasks);
+    if (!verifyTaskUpdates(output, data.tasks)) return { ok: false, message: '无法安全写回任务进度，计划未修改' };
+    writeFileSync(planFile, output, 'utf8');
   }
   return { ok: true, touched };
 }
@@ -115,7 +117,9 @@ function updateTask(body, project) {
   else { task.actualStart ||= today; task.actualEnd = task.status === 'done' ? (task.actualEnd || today) : null; }
   const errors = validate(data);
   if (errors.length) throw new Error(errors.join('; '));
-  writeFileSync(planFile, updatePlanMarkdown(raw, [task]), 'utf8');
+  const output = updatePlanMarkdown(raw, [task]);
+  if (!verifyTaskUpdates(output, [task])) throw new Error('无法安全写回任务进度，计划未修改');
+  if (output !== raw) writeFileSync(planFile, output, 'utf8');
   return { ok: true, task };
 }
 
@@ -172,7 +176,7 @@ createServer((req, res) => {
     return;
   }
   let project;
-  if (url.pathname.startsWith('/api/')) {
+  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/webhooks') {
     try { project = workspaces.get(url.searchParams.get('project')); }
     catch (err) { return json(res, 404, { message: err.message }); }
   }
@@ -185,7 +189,11 @@ createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => { body += chunk; if (body.length > 262144) req.destroy(); });
     req.on('end', () => {
-      try { const parsed = JSON.parse(body); json(res, 200, { ok: true, channels: webhooks.save(Array.isArray(parsed) ? parsed : parsed.channels) }); }
+      try {
+        const parsed = JSON.parse(body);
+        const projectIds = workspaces.read().projects.map(({ id }) => id);
+        json(res, 200, { ok: true, channels: webhooks.save(Array.isArray(parsed) ? parsed : parsed.channels, projectIds) });
+      }
       catch { json(res, 400, { message: '渠道配置无效或无法保存' }); }
     });
     return;
@@ -205,6 +213,7 @@ createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/events' && req.method === 'GET') {
+    watchProject(project);
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -218,9 +227,10 @@ createServer((req, res) => {
     return;
   }
   if (url.pathname === '/api/plan') {
+    if (existsSync(project.planPath)) watchProject(project);
     const r = loadPlan(project);
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    return res.end(JSON.stringify({ ...r, errors: r.data ? validate(r.data) : r.error }));
+    return res.end(JSON.stringify({ ...r, projectId: project.id, errors: r.data ? validate(r.data) : r.error }));
   }
   if (url.pathname === '/api/task' && req.method === 'POST') {
     if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });

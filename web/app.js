@@ -10,16 +10,22 @@ const STATUS = { todo: '未开始', doing: '进行中', done: '已完成', block
 let last = null;      // 最近一次 { data, revision, commits, m }
 let selected = null;  // 选中的任务或里程碑 id
 let refreshSequence = 0;
+let projectsSequence = 0;
+let workspaceEpoch = 0;
 let editingTask = null;
+let taskEditBase = null;
+let milestoneEditBase = null;
 let isCreatingTask = false;
 let plannerMode = false;
 let currentProjectId = '';
-let defaultProjectId = '';
+let defaultProjectId = 'default';
 let eventSource = null;
 let webhookChannelsDraft = [];
+let webhookProjects = [];
 
-const apiUrl = (path) => (currentProjectId && currentProjectId !== defaultProjectId)
-  ? `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(currentProjectId)}`
+const selectedProjectId = () => currentProjectId || defaultProjectId;
+const apiUrl = (path, projectId = currentProjectId) => projectId
+  ? `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(projectId)}`
   : path;
 
 function downloadReport(content, type, extension) {
@@ -40,9 +46,14 @@ $('copySummary').addEventListener('click', async () => {
   catch { $('reportMessage').textContent = '无法访问剪贴板，请检查浏览器权限'; }
 });
 
-const snapshotKey = () => `task-orchestration.snapshots.${last.data.project}`;
+const snapshotKey = () => `task-orchestration.snapshots.by-project.${last.projectId}`;
 function readSnapshots() {
-  try { const saved = JSON.parse(localStorage.getItem(snapshotKey()) || '[]'); return Array.isArray(saved) ? saved : []; } catch { return []; }
+  try {
+    const saved = JSON.parse(localStorage.getItem(snapshotKey())
+      ?? (last.projectId === 'default' ? localStorage.getItem(`task-orchestration.snapshots.${last.data.project}`) : null)
+      ?? '[]');
+    return Array.isArray(saved) ? saved : [];
+  } catch { return []; }
 }
 function updateSnapshots() {
   const selectedSnapshot = $('snapshots').value;
@@ -97,17 +108,18 @@ function nextTaskId(tasks) {
   return `T-${maxNum + 1}`;
 }
 
-function openTaskModal(task, isNew = false, prefillReason = '') {
-  if (!last) return;
+function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
+  if (!base || base.epoch !== workspaceEpoch) return;
+  taskEditBase = { ...base };
   isCreatingTask = isNew;
   editingTask = isNew
     ? {
-        id: nextTaskId(last.data.tasks),
+        id: nextTaskId(base.data.tasks),
         title: '',
         owner: 'dev',
-        milestone: last.data.milestones.at(-1)?.id || 'M1',
-        start: last.m.today,
-        end: last.m.today,
+        milestone: base.data.milestones.at(-1)?.id || 'M1',
+        start: base.m.today,
+        end: base.m.today,
         deps: [],
         status: 'todo',
         progress: 0,
@@ -122,7 +134,7 @@ function openTaskModal(task, isNew = false, prefillReason = '') {
     : `负责人 ${editingTask.owner} · 计划 ${editingTask.start} ~ ${editingTask.end} · 依赖 ${editingTask.deps.join('、') || '无'}`;
   $('plannerFields').hidden = !plannerMode && !isNew;
   $('splitTaskBtn').hidden = !(plannerMode && !isNew);
-  $('planTaskMilestone').innerHTML = last.data.milestones.map((ms) => `<option value="${esc(ms.id)}">${esc(ms.id)} · ${esc(ms.name)}</option>`).join('');
+  $('planTaskMilestone').innerHTML = base.data.milestones.map((ms) => `<option value="${esc(ms.id)}">${esc(ms.id)} · ${esc(ms.name)}</option>`).join('');
   $('planTaskId').value = editingTask.id;
   $('planTaskTitle').value = editingTask.title;
   $('planTaskOwner').value = editingTask.owner;
@@ -139,13 +151,15 @@ function openTaskModal(task, isNew = false, prefillReason = '') {
 
 document.addEventListener('pointerdown', (event) => {
   const simBar = event.target.closest('[data-sim-drag]');
-  if (simBar && event.button === 0) {
+  if (last && simBar && event.button === 0) {
     event.preventDefault();
     const id = simBar.dataset.simDrag, startX = event.clientX;
     const pxPerDay = simBar.closest('.tl').getBoundingClientRect().width / Number(simBar.dataset.days);
     const original = delays[id] || 0;
+    const epoch = workspaceEpoch;
     const finish = (up) => {
       document.removeEventListener('pointerup', finish);
+      if (!last || epoch !== workspaceEpoch) return;
       const days = Math.max(0, Math.min(3650, original + Math.round((up.clientX - startX) / pxPerDay)));
       if (days) delays[id] = days; else delete delays[id];
       $('simTask').value = id; $('simDays').value = days;
@@ -157,50 +171,57 @@ document.addEventListener('pointerdown', (event) => {
   const planBar = event.target.closest('[data-plan-drag]');
   if (planBar && plannerMode && event.button === 0 && last) {
     event.preventDefault();
+    const base = last;
     const id = planBar.dataset.planDrag, startX = event.clientX;
     const pxPerDay = planBar.closest('.tl').getBoundingClientRect().width / Number(planBar.dataset.days);
-    const task = last.data.tasks.find((item) => item.id === id);
+    const task = base.data.tasks.find((item) => item.id === id);
     if (!task) return;
     const finishPlanDrag = (up) => {
       document.removeEventListener('pointerup', finishPlanDrag);
+      if (!last || base.epoch !== workspaceEpoch) return;
       const delta = Math.round((up.clientX - startX) / pxPerDay);
       if (!delta) return;
       const newStart = fromDay(toDay(task.start) + delta);
       const newEnd = fromDay(toDay(task.end) + delta);
       selected = id;
-      openTaskModal({ ...task, start: newStart, end: newEnd }, false, `拖拽调整 ${id} 排期(${delta > 0 ? '+' : ''}${delta}天: ${newStart} ~ ${newEnd})`);
+      openTaskModal({ ...task, start: newStart, end: newEnd }, false, `拖拽调整 ${id} 排期(${delta > 0 ? '+' : ''}${delta}天: ${newStart} ~ ${newEnd})`, base);
     };
     document.addEventListener('pointerup', finishPlanDrag, { once: true });
   }
 });
 
 $('closeTask').addEventListener('click', () => $('taskDialog').close?.());
+$('taskDialog').addEventListener('close', () => { if (!$('taskDialog').open) taskEditBase = null; });
 $('taskStatus').addEventListener('change', () => {
   if ($('taskStatus').value === 'done') $('taskProgress').value = 100;
   if ($('taskStatus').value === 'todo') $('taskProgress').value = 0;
 });
 $('validatePlan').addEventListener('click', async () => {
+  const base = taskEditBase;
+  if (!base || !last || base.epoch !== workspaceEpoch) return;
   try {
-    const result = await (await fetch(apiUrl('/api/plan'))).json();
-    $('taskMessage').textContent = result.errors?.length ? result.errors.join('；') : '计划校验通过';
-  } catch { $('taskMessage').textContent = '无法连接服务'; }
+    const result = await (await fetch(apiUrl('/api/plan', base.projectId))).json();
+    if (taskEditBase !== base) return;
+    $('taskMessage').textContent = result.message || (result.errors?.length ? result.errors.join('；') : '计划校验通过');
+  } catch { if (taskEditBase === base) $('taskMessage').textContent = '无法连接服务'; }
 });
 
-async function saveFullPlan(nextData, reason, statusEl) {
-  const response = await fetch(apiUrl('/api/plan/save'), {
+async function saveFullPlan(base, nextData, reason, statusEl, isCurrent) {
+  const response = await fetch(apiUrl('/api/plan/save', base.projectId), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       project: nextData.project,
-      expectedRevision: last?.revision || '',
+      expectedRevision: base.revision,
       milestones: nextData.milestones,
       tasks: nextData.tasks,
       reason,
     }),
   });
   const result = await response.json();
+  if (!isCurrent()) return false;
   if (!response.ok) {
-    statusEl.textContent = result.message || '保存失败';
+    statusEl.textContent = response.status === 409 ? '计划已变化，请关闭弹窗后重新打开，再应用你的更改。' : result.message || '保存失败';
     return false;
   }
   return true;
@@ -208,7 +229,9 @@ async function saveFullPlan(nextData, reason, statusEl) {
 
 $('taskForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!editingTask || !last) return;
+  const base = taskEditBase;
+  const isCurrent = () => taskEditBase === base;
+  if (!editingTask || !last || !base || base.epoch !== workspaceEpoch) return;
   if (plannerMode || isCreatingTask) {
     const title = $('planTaskTitle').value.trim();
     const owner = $('planTaskOwner').value.trim();
@@ -219,7 +242,7 @@ $('taskForm').addEventListener('submit', async (event) => {
     const status = $('taskStatus').value;
     const progress = Number($('taskProgress').value);
     const reason = $('planChangeReason').value.trim();
-    const today = last.m.today;
+    const today = base.m.today;
     const updatedTask = {
       id: editingTask.id,
       title,
@@ -234,35 +257,38 @@ $('taskForm').addEventListener('submit', async (event) => {
       actualEnd: status === 'done' ? (editingTask.actualEnd || today) : null,
     };
     const nextTasks = isCreatingTask
-      ? [...last.data.tasks, updatedTask]
-      : last.data.tasks.map((t) => (t.id === editingTask.id ? updatedTask : t));
+      ? [...base.data.tasks, updatedTask]
+      : base.data.tasks.map((t) => (t.id === editingTask.id ? updatedTask : t));
     try {
-      const ok = await saveFullPlan({ ...last.data, tasks: nextTasks }, reason, $('taskMessage'));
+      const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent);
       if (!ok) return;
       $('taskDialog').close?.();
       selected = updatedTask.id;
       await refresh();
-    } catch { $('taskMessage').textContent = '保存失败，无法连接服务'; }
+    } catch { if (isCurrent()) $('taskMessage').textContent = '保存失败，无法连接服务'; }
     return;
   }
   const expected = Object.fromEntries(['status', 'progress', 'actualStart', 'actualEnd'].map((key) => [key, editingTask[key]]));
   try {
-    const response = await fetch(apiUrl('/api/task'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: editingTask.id, expected, status: $('taskStatus').value, progress: Number($('taskProgress').value) }) });
+    const response = await fetch(apiUrl('/api/task', base.projectId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: editingTask.id, expected, status: $('taskStatus').value, progress: Number($('taskProgress').value) }) });
     const result = await response.json();
+    if (!isCurrent()) return;
     if (!response.ok) { $('taskMessage').textContent = result.message; return; }
     $('taskDialog').close?.();
     await refresh();
-  } catch { $('taskMessage').textContent = '保存失败，无法连接服务'; }
+  } catch { if (isCurrent()) $('taskMessage').textContent = '保存失败，无法连接服务'; }
 });
 
 $('splitTaskBtn').addEventListener('click', async () => {
-  if (!editingTask || isCreatingTask || !last) return;
+  const base = taskEditBase;
+  const isCurrent = () => taskEditBase === base;
+  if (!editingTask || isCreatingTask || !last || !base || base.epoch !== workspaceEpoch) return;
   const reason = $('planChangeReason').value.trim() || `将 ${editingTask.id} 拆分为两个子任务`;
   const s = toDay($('planTaskStart').value || editingTask.start);
   const e = toDay($('planTaskEnd').value || editingTask.end);
   const mid = s + Math.floor((e - s) / 2);
   const secondStart = Math.min(e, mid + 1);
-  const newId = nextTaskId(last.data.tasks);
+  const newId = nextTaskId(base.data.tasks);
   const baseTitle = ($('planTaskTitle').value || editingTask.title).trim();
   const firstTask = {
     ...editingTask,
@@ -287,7 +313,7 @@ $('splitTaskBtn').addEventListener('click', async () => {
     actualEnd: null,
   };
   const nextTasks = [];
-  for (const t of last.data.tasks) {
+  for (const t of base.data.tasks) {
     if (t.id === firstTask.id) {
       nextTasks.push(firstTask, secondTask);
     } else {
@@ -296,45 +322,48 @@ $('splitTaskBtn').addEventListener('click', async () => {
     }
   }
   try {
-    const ok = await saveFullPlan({ ...last.data, tasks: nextTasks }, reason, $('taskMessage'));
+    const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent);
     if (!ok) return;
     $('taskDialog').close?.();
     selected = secondTask.id;
     await refresh();
-  } catch { $('taskMessage').textContent = '拆分失败，无法连接服务'; }
+  } catch { if (isCurrent()) $('taskMessage').textContent = '拆分失败，无法连接服务'; }
 });
 
 $('closeMilestone').addEventListener('click', () => $('milestoneDialog').close?.());
+$('milestoneDialog').addEventListener('close', () => { if (!$('milestoneDialog').open) milestoneEditBase = null; });
 $('milestoneForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!last) return;
+  const base = milestoneEditBase;
+  const isCurrent = () => milestoneEditBase === base;
+  if (!last || !base || base.epoch !== workspaceEpoch) return;
   const id = $('msIdInput').value.trim();
   const name = $('msNameInput').value.trim();
   const due = $('msDueInput').value;
   const reason = $('msReasonInput').value.trim();
-  const nextMilestones = [...last.data.milestones, { id, name, due }];
+  const nextMilestones = [...base.data.milestones, { id, name, due }];
   try {
-    const ok = await saveFullPlan({ ...last.data, milestones: nextMilestones }, reason, $('milestoneMessage'));
+    const ok = await saveFullPlan(base, { ...base.data, milestones: nextMilestones }, reason, $('milestoneMessage'), isCurrent);
     if (!ok) return;
     $('milestoneDialog').close?.();
     await refresh();
-  } catch { $('milestoneMessage').textContent = '保存失败，无法连接服务'; }
+  } catch { if (isCurrent()) $('milestoneMessage').textContent = '保存失败，无法连接服务'; }
 });
 
 // 多项目工作区切换与注册 (T-22)
 async function refreshProjects() {
+  const sequence = ++projectsSequence;
   try {
     const res = await (await fetch('/api/projects')).json();
-    if (!res || !Array.isArray(res.projects)) return;
-    defaultProjectId = res.default || '';
-    if (!currentProjectId) currentProjectId = defaultProjectId;
+    if (sequence !== projectsSequence || !Array.isArray(res.projects)) return;
+    defaultProjectId = res.default || 'default';
     const dot = { green: '🟢', yellow: '🟡', red: '🔴', unavailable: '⚪' };
     $('projectSelect').innerHTML = res.projects.map((p) => {
       const pctText = typeof p.overall === 'number' ? `${Math.round(p.overall)}%` : '不可用';
       return `<option value="${esc(p.id)}">${dot[p.health] || '⚪'} ${esc(p.name)} (${pctText})</option>`;
     }).join('');
-    if (res.projects.some((p) => p.id === currentProjectId)) {
-      $('projectSelect').value = currentProjectId;
+    if (res.projects.some((p) => p.id === selectedProjectId())) {
+      $('projectSelect').value = selectedProjectId();
     }
   } catch { /* 单项目回退 */ }
 }
@@ -346,13 +375,41 @@ function bindEventsStream() {
   eventSource.addEventListener('plan-change', refresh);
 }
 
-$('projectSelect').addEventListener('change', async () => {
-  currentProjectId = $('projectSelect').value;
+function setPlanAvailable(available) {
+  for (const id of ['plannerMode', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
+    'burndownScope', 'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn']) {
+    $(id).disabled = !available;
+  }
+}
+
+function clearPlan() {
+  last = null;
   selected = null;
+  editingTask = taskEditBase = milestoneEditBase = null;
+  for (const id of ['taskDialog', 'milestoneDialog']) if ($(id).open) $(id).close();
+  for (const id of ['kpis', 'gctrl', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
+    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus']) {
+    $(id).innerHTML = '';
+  }
+  for (const id of ['project', 'pill']) $(id).textContent = '';
+  $('pill').className = 'pill';
+  setPlanAvailable(false);
+}
+
+async function switchProject(projectId) {
+  currentProjectId = projectId;
+  workspaceEpoch++;
+  clearPlan();
   delays = {};
+  $('simDays').value = 0;
+  $('burndownScope').value = 'all';
+  $('updated').textContent = '正在加载项目计划…';
+  showErrors([]);
   bindEventsStream();
   await refresh();
-});
+}
+
+$('projectSelect').addEventListener('change', () => switchProject($('projectSelect').value));
 
 $('addProjectBtn').addEventListener('click', () => {
   $('projIdInput').value = '';
@@ -377,9 +434,13 @@ $('projectForm').addEventListener('submit', async (event) => {
     const result = await response.json();
     if (!response.ok) { $('projectMessage').textContent = result.message || '注册失败'; return; }
     $('projectDialog').close?.();
-    currentProjectId = result.project.id;
-    bindEventsStream();
-    await refresh();
+    const select = $('projectSelect');
+    if (![...select.options].some(({ value }) => value === result.project.id)) {
+      select.add(new Option(result.project.name, result.project.id));
+    }
+    select.value = result.project.id;
+    void refreshProjects();
+    await switchProject(result.project.id);
   } catch { $('projectMessage').textContent = '无法连接服务'; }
 });
 
@@ -408,6 +469,10 @@ function renderWebhookDraft() {
         <label><input type="checkbox" data-wh-field="enabled" ${ch.enabled ? 'checked' : ''}> 启用渠道</label>
         <label><input type="checkbox" data-wh-field="autoAlert" ${ch.autoAlert ? 'checked' : ''}> 新增红色高危风险时自动推送</label>
       </div>
+      <fieldset class="webhook-row">
+        <legend>允许发送的项目（未选择时不发送）</legend>
+        ${webhookProjects.map(({ id, name }) => `<label><input type="checkbox" data-wh-project value="${esc(id)}" ${ch.projects?.includes(id) ? 'checked' : ''}> ${esc(name)}（${esc(id)}）</label>`).join('')}
+      </fieldset>
     </div>`).join('');
 }
 
@@ -421,17 +486,22 @@ function syncWebhookDraftFromDom() {
     item.url = row.querySelector('[data-wh-field="url"]').value.trim();
     item.enabled = row.querySelector('[data-wh-field="enabled"]').checked;
     item.autoAlert = row.querySelector('[data-wh-field="autoAlert"]').checked;
+    item.projects = [...row.querySelectorAll('[data-wh-project]:checked')].map((input) => input.value);
   });
 }
 
 $('configWebhookBtn').addEventListener('click', async () => {
   $('webhookDialogMsg').textContent = '';
   try {
-    const res = await (await fetch('/api/webhooks')).json();
-    webhookChannelsDraft = Array.isArray(res.channels) ? res.channels.map((c) => ({ ...c })) : [];
-  } catch { webhookChannelsDraft = []; }
-  renderWebhookDraft();
-  $('webhookDialog').showModal?.();
+    const [config, registry] = await Promise.all([fetch('/api/webhooks'), fetch('/api/projects')]);
+    if (!config.ok || !registry.ok) throw new Error();
+    const [{ channels }, { projects }] = await Promise.all([config.json(), registry.json()]);
+    if (!Array.isArray(channels) || !Array.isArray(projects)) throw new Error();
+    webhookProjects = projects;
+    webhookChannelsDraft = channels.map((channel) => ({ ...channel }));
+    renderWebhookDraft();
+    if (!$('webhookDialog').open) $('webhookDialog').showModal?.();
+  } catch { $('webhookStatus').textContent = '无法读取渠道或项目列表，请重试'; }
 });
 
 $('addWebhookChannelBtn').addEventListener('click', () => {
@@ -444,6 +514,7 @@ $('addWebhookChannelBtn').addEventListener('click', () => {
     configured: false,
     enabled: true,
     autoAlert: true,
+    projects: [],
   });
   renderWebhookDraft();
 });
@@ -474,19 +545,22 @@ $('webhookForm').addEventListener('submit', async (event) => {
 });
 
 async function triggerNotify(mode, statusEl) {
+  if (!last) return;
+  const { epoch, projectId } = last;
   statusEl.textContent = '正在推送…';
   try {
-    const response = await fetch(apiUrl('/api/notify'), {
+    const response = await fetch(apiUrl('/api/notify', projectId), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ channelId: 'all', mode }),
     });
     const result = await response.json();
+    if (!last || epoch !== workspaceEpoch) return;
     if (!response.ok) { statusEl.textContent = result.message || '推送失败'; return; }
-    if (!result.results?.length) { statusEl.textContent = '无已启用的 Webhook 渠道，请先点击「配置渠道」'; return; }
+    if (!result.results?.length) { statusEl.textContent = '当前项目没有可用渠道，请在「配置渠道」中授权该项目'; return; }
     const sent = result.results.filter((r) => r.status === 'sent').length;
     statusEl.textContent = `推送完成：成功 ${sent}/${result.results.length} 个渠道`;
-  } catch { statusEl.textContent = '推送请求失败'; }
+  } catch { if (last && epoch === workspaceEpoch) statusEl.textContent = '推送请求失败'; }
 }
 
 $('pushRisksBtn').addEventListener('click', () => triggerNotify('risks', $('webhookStatus')));
@@ -496,14 +570,17 @@ $('today').value = todayLocal();
 $('today').addEventListener('change', refresh);
 $('reset').addEventListener('click', () => { $('today').value = todayLocal(); refresh(); });
 $('syncGit')?.addEventListener('click', async () => {
+  if (!last) return;
+  const { epoch, projectId } = last;
   try {
-    const r = await (await fetch(apiUrl('/api/sync-git'), { method: 'POST' })).json();
+    const r = await (await fetch(apiUrl('/api/sync-git', projectId), { method: 'POST' })).json();
+    if (!last || epoch !== workspaceEpoch) return;
     $('updated').textContent = r.ok
       ? (r.touched.length ? `已同步: ${r.touched.join(', ')}` : 'Git 无新变更')
       : `同步失败: ${r.message}`;
     await refresh();
   } catch {
-    $('updated').textContent = '同步请求失败';
+    if (last && epoch === workspaceEpoch) $('updated').textContent = '同步请求失败';
   }
 });
 
@@ -522,6 +599,7 @@ document.addEventListener('click', (e) => {
     const act = ac.dataset.act;
     if (act === 'new-task') { openTaskModal(null, true); return; }
     if (act === 'new-milestone') {
+      milestoneEditBase = { ...last };
       const nextIdx = last.data.milestones.length + 1;
       $('msIdInput').value = `M${nextIdx}`;
       $('msNameInput').value = '';
@@ -556,6 +634,7 @@ document.addEventListener('click', (e) => {
 
 async function refresh() {
   const sequence = ++refreshSequence;
+  const projectId = selectedProjectId();
   let res;
   try { res = await (await fetch(apiUrl('/api/plan'))).json(); }
   catch {
@@ -563,9 +642,14 @@ async function refresh() {
     return;
   }
   if (sequence !== refreshSequence) return;
-  showErrors(res.errors);
-  if (!res.data || !res.data.tasks) return;
-  last = { data: res.data, revision: res.revision || '', commits: res.commits || {}, m: compute(res.data, $('today').value || todayLocal()) };
+  showErrors(res.errors?.length ? res.errors : res.message ? [res.message] : []);
+  if (!res.data || !Array.isArray(res.data.tasks) || res.errors?.length) {
+    clearPlan();
+    $('updated').textContent = '项目计划不可用';
+    return;
+  }
+  last = { projectId: res.projectId || projectId, epoch: workspaceEpoch, data: res.data, revision: res.revision || '', commits: res.commits || {}, m: compute(res.data, $('today').value || todayLocal()) };
+  setPlanAvailable(true);
   $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
   renderAll(false);
   refreshProjects();
@@ -892,7 +976,9 @@ function renderLoad(m) {
   $('load').innerHTML = `<div class="loadw"><table class="load"><tr><th>周起</th>${head}</tr>${rows}</table></div><div class="empty" style="font-size:12px;margin-top:6px">每周展示每日并行任务峰值；≥3 标红。</div>${suggestions ? `<ul class="load-suggestions">${suggestions}</ul>` : '<div class="empty">暂无资源冲突建议</div>'}`;
 }
 
+setPlanAvailable(false);
 refresh();
+refreshProjects();
 bindEventsStream();
 // 监听不可用时仍可恢复更新。
 setInterval(refresh, 5000);

@@ -278,6 +278,17 @@ tasks:
     progress: 100
     actualStart: 2026-11-17
     actualEnd: 2026-11-17
+  - id: T-25
+    title: 修复 M4 审查问题(弹窗版本锁、项目切换隔离、Webhook项目范围、引号ID回写、默认计划容错)
+    owner: codex
+    milestone: M4
+    start: 2026-12-14
+    end: 2026-12-14
+    deps: [T-24]
+    status: done
+    progress: 100
+    actualStart: 2026-11-18
+    actualEnd: 2026-11-18
 ---
 
 # 计划说明
@@ -300,3 +311,4 @@ tasks:
 
 变更记录:2026-11-17 规划者根据用户要求将未完成的 T-8、T-9、T-15、T-12、T-13、T-14 转交 codex；原计划日期和依赖保持不变。
 变更记录:2026-11-17 规划者按用户确认的 M4 方案增量规划里程碑 M4 与任务 T-17 ~ T-24(燃尽图、可视化规划器、多项目工作区、多渠道 Webhook 预警),由 codex 与 antigravity 并行分工。
+变更记录:2026-11-18 规划者按用户要求将 T-25 交由 codex 接手；计划日期排在 T-24 之后，因 M4 已实际交付，修复于 11-18 提前开始。

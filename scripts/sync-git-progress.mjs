@@ -12,7 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { parseFrontMatter, validate } from './validate-plan.mjs';
+import { parseFrontMatter, parseScalar, validate } from './validate-plan.mjs';
 
 const todayLocal = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
@@ -123,19 +123,62 @@ export function applyCommitToTask(task, update, dateStr) {
  * 将更新后的任务状态回写到 plan.md 文本中(只替换对应任务块的 status/progress/actualStart/actualEnd,保留注释与正文)
  */
 export function updatePlanMarkdown(planText, tasks) {
-  let out = planText;
-  for (const t of tasks) {
-    const idRe = new RegExp(`(  - id: ${t.id}\\r?\\n)([\\s\\S]*?)(?=\\r?\\n  - id: |\\r?\\n---)`);
-    const m = out.match(idRe);
-    if (!m) continue;
-    let block = m[2];
-    block = block.replace(/^(\s*status:\s*)([^\s#]+)(.*)$/m, `$1${t.status}$3`);
-    block = block.replace(/^(\s*progress:\s*)([^\s#]+)(.*)$/m, `$1${t.progress}$3`);
-    block = block.replace(/^(\s*actualStart:\s*)([^\s#]+)(.*)$/m, `$1${t.actualStart ?? 'null'}$3`);
-    block = block.replace(/^(\s*actualEnd:\s*)([^\s#]+)(.*)$/m, `$1${t.actualEnd ?? 'null'}$3`);
-    out = out.slice(0, m.index) + m[1] + block + out.slice(m.index + m[0].length);
+  const sections = planText.match(/^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---)(?=\r?\n|$)/);
+  if (!sections) return planText;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const progressFields = ['status', 'progress', 'actualStart', 'actualEnd'];
+  const lines = sections[2].split(/(\r?\n)/);
+  let inTasks = false, item = [];
+  const writeItem = () => {
+    const task = byId.get(item.findLast((field) => field.key === 'id')?.value);
+    if (!task) return;
+    for (const key of progressFields) {
+      const field = item.findLast((entry) => entry.key === key);
+      if (field && field.value !== (task[key] ?? null)) {
+        const value = String(task[key] ?? 'null');
+        lines[field.index] = field.prefix + value + field.suffix;
+      } else if (!field && task[key] != null) {
+        const last = item.at(-1);
+        const indent = item[1]?.prefix.match(/^\s*/)[0] ?? item[0].prefix.match(/^\s*/)[0] + '  ';
+        const eol = lines[last.index + 1] ?? (sections[1].endsWith('\r\n') ? '\r\n' : '\n');
+        lines[last.index] += eol + indent + key + ': ' + task[key];
+      }
+    }
+  };
+  for (let index = 0; index < lines.length; index += 2) {
+    const line = lines[index];
+    const root = /^(\w+):/.exec(line);
+    if (root) {
+      writeItem();
+      item = [];
+      inTasks = root[1] === 'tasks';
+    } else if (inTasks) {
+      const entry = /^(\s+-\s+|\s+)(\w+):(.*)$/.exec(line);
+      if (!entry) continue;
+      if (entry[1].includes('-')) { writeItem(); item = []; }
+      const remainder = entry[3];
+      const suffix = /[ \t]+#.*$/.exec(remainder)?.[0] ?? /[ \t]*$/.exec(remainder)[0];
+      const scalar = remainder.slice(0, remainder.length - suffix.length);
+      const space = scalar ? /^[ \t]*/.exec(scalar)[0] : ' ';
+      item.push({ index, key: entry[2], prefix: entry[1] + entry[2] + ':' + space, value: parseScalar(scalar), suffix });
+    }
   }
-  return out;
+  writeItem();
+  return sections[1] + lines.join('') + sections[3] + planText.slice(sections[0].length);
+}
+
+/**
+ * 写盘前确认生成的文本重新解析后确实包含预期的任务进度字段,
+ * 避免“校验通过但文件没变”仍返回成功。
+ */
+export function verifyTaskUpdates(output, tasks) {
+  let parsed;
+  try { parsed = parseFrontMatter(output); } catch { return false; }
+  if (!parsed || !Array.isArray(parsed.tasks)) return false;
+  return tasks.every((t) => {
+    const got = parsed.tasks.find((item) => item.id === t.id);
+    return got && ['status', 'progress', 'actualStart', 'actualEnd'].every((key) => (got[key] ?? null) === (t[key] ?? null));
+  });
 }
 
 /**
@@ -238,6 +281,10 @@ if (isCli) {
   }
 
   const nextText = updatePlanMarkdown(rawPlan, data.tasks);
+  if (!verifyTaskUpdates(nextText, data.tasks)) {
+    console.error('✗ 无法安全写回任务进度，计划未修改');
+    process.exit(1);
+  }
   writeFileSync(planFile, nextText, 'utf8');
   console.log(`✓ 已根据 git commit 同步任务进度: ${touched.join(', ')}`);
 }
