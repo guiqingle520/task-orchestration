@@ -32,7 +32,7 @@ aside{display:grid;gap:12px}
 .sw{display:inline-block;width:18px;height:8px;border-radius:2px;font-style:normal;font-size:10px;line-height:8px;text-align:center}
 .sw.plan{background:#cbd5e1}.sw.act{background:var(--g)}
 .sw.slip{border:1px dashed var(--r);background:#fff}.sw.crit{background:none;color:var(--r);width:auto;font-size:12px}
-.sw.ms{width:2px;height:10px;background:var(--ms);border-radius:0}.sw.today{width:2px;height:10px;background:var(--acc);border-radius:0}
+.sw.milestone{width:0;height:12px;border-left:2px dashed var(--ms);border-radius:0}.sw.today{width:2px;height:10px;background:var(--acc);border-radius:0}
 /* 甘特图 */
 .gwrap{display:grid;grid-template-columns:var(--lw) minmax(0,1fr);border:1px solid var(--b);border-radius:8px;overflow:hidden}
 .lhead,.thead{height:28px;border-bottom:1px solid var(--b);background:var(--bg);font-size:11px;color:var(--m)}
