@@ -5,7 +5,7 @@
 - **核心架构约束**：
   1. **零第三方运行依赖**：仅使用 Node.js 内置标准库（`node:fs`、`node:path`、`node:http`、`node:https`、`node:child_process`、`node:crypto`）与原生浏览器 ES Module + SVG/DOM。
   2. **`plan.md` 格式严守规范**：严格遵守 `docs/PLAN_SPEC.md`，**不得向 `plan/plan.md` 的 YAML front matter 增删任何字段**。扩展元数据（如工作日历、工时故事点、第三方平台配置）一律通过项目隔离的侧车文件（Sidecar JSON）承载。
-  3. **多项目与版本锁隔离**：所有新增服务端接口均须支持 `?project=<id>` 参数（通过 `workspaces.get()` 解析），所有修改 `plan.md` 的操作均须校验 `expectedRevision` 与必填 `reason`。
+  3. **多项目与版本锁隔离**：所有新增服务端接口均须支持 `?project=<id>` 参数（通过 `workspaces.get()` 解析）；任何修改计划结构/排期的操作须校验 `expectedRevision` 与必填 `reason`，修改任务执行态的操作须校验 `expectedRevision`（或单任务字段级乐观锁）。
 - **角色分工**：
   - `codex`：负责核心纯函数算法、服务端模块、REST API 与自动化测试（`T-26 / T-28 / T-30 / T-32 / T-34`）。
   - `antigravity`：负责前端 SVG/DOM 视图渲染、拖拽连线交互、弹窗配置与状态同步（`T-27 / T-29 / T-31 / T-33 / T-35`）。
@@ -16,42 +16,48 @@
 
 ### 1.1 排期变更与依赖连线预检算法（T-26 · `web/metrics.js`）
 
-在 `web/metrics.js` 中新增导出纯函数 `previewPlanEdit(plan, editOperation)`，用于在用户拖拽拉伸任务条或拖拽连线建立/解除依赖时，实时在前端内存中进行无副作用的合法性校验、环检测与下游排期冲突顺延试算。
+在 `web/metrics.js` 中新增导出纯函数 `previewPlanEdit(plan, editOperation)`，用于在用户拖拽平移/拉伸任务条或拖拽连线建立/解除依赖时，实时在内存中进行无副作用的合法性校验、环检测与受影响下游排期冲突试算。
 
 #### 输入参数
 - `plan`: 当前解析后的计划对象 `{ project, milestones, tasks }`（函数内部禁止原地修改 `plan`）。
 - `editOperation`: 编辑动作描述对象，支持以下 4 种 `type`：
-  1. **平移排期 (`move`)**：`{ type: 'move', taskId: 'T-5', deltaDays: 3 }`
+  1. **平移排期 (`move`)**：`{ type: 'move', taskId: 'T-5', deltaDays: 3, cascade: false }`
   2. **双端拉伸工期 (`resize`)**：`{ type: 'resize', taskId: 'T-5', edge: 'start' | 'end', targetDate: '2026-11-22', cascade: false }`
   3. **新增依赖连线 (`link`)**：`{ type: 'link', fromId: 'T-3', toId: 'T-5', cascade: false }`（即让 `toId.deps` 包含 `fromId`）
   4. **移除依赖连线 (`unlink`)**：`{ type: 'unlink', fromId: 'T-3', toId: 'T-5' }`
 
-#### 处理逻辑与计算口径
+#### 处理逻辑与计算口径（已明确同日交接与作用范围规则）
 1. **基础校验与环检测**：
-   - 校验目标任务是否存在；`resize` 时校验 `start <= end`，若 `edge === 'start'` 且 `targetDate > task.end`（或反之），返回 `{ valid: false, code: 'INVALID_DATE_RANGE', message: '开始日期不能晚于结束日期' }`。
+   - 校验目标任务是否存在（不存在返回 `code: 'UNKNOWN_TASK'`）。
+   - `resize` 时校验 `start <= end`：若 `edge === 'start'` 且 `targetDate > task.end`（或 `edge === 'end'` 且 `targetDate < task.start`），返回 `{ valid: false, code: 'INVALID_DATE_RANGE', message: '开始日期不能晚于结束日期' }`。
    - `link` 时：
      - 若 `fromId === toId`，返回 `{ valid: false, code: 'SELF_DEPENDENCY', message: '任务不能依赖自身' }`；
      - 若 `toId.deps` 已包含 `fromId`，返回 `{ valid: false, code: 'DUPLICATE_DEPENDENCY', message: '依赖关系已存在' }`；
      - 执行拓扑 DFS 环检测：若加入 `fromId -> toId` 后形成环路，返回 `{ valid: false, code: 'CYCLE_DETECTED', cyclePath: ['T-3', 'T-5', 'T-3'], message: '存在循环依赖: T-3 -> T-5 -> T-3' }`。
-2. **依赖冲突检测（Dependency Violation）与级联顺延（Cascade Shift）**：
-   - 对任意存在依赖关系 `u -> v`（`v` 依赖 `u`），规范要求理想排期满足 `toDay(v.start) >= toDay(u.end)`（或 `toDay(v.start) > toDay(u.end)` 紧接下一日；此处统一定义：**若 `toDay(v.start) < toDay(u.end)` 则判定为排期倒挂冲突 `conflicts`**）。
-   - 当 `editOperation.cascade === true` 时：按拓扑序自动将所有满足 `toDay(v.start) < toDay(u.end)` 的下游任务 `v` 顺延，使其新 `start = u.end`（保持 `v` 原工期 `dur` 不变），并记录在 `cascadedTaskIds` 中。
-3. **关键路径与里程碑影响对比**：
-   - 基于变更后的 `nextPlan` 计算新的关键路径 `criticalTaskIds` 以及受影响的里程碑预计完成日变化 `milestoneImpacts`。
+2. **排期冲突口径（允许同日交接，新增或加重的倒挂必须解决）**：
+   - **同日交接合法**：对任意依赖边 `u -> v`（`v` 依赖 `u`），编辑预检**允许下游在上游结束当天开工**（即 `toDay(v.start) >= toDay(u.end)` 不视为冲突）。*注：现有的 `simulateDelays` 延期推演继续保留“次日开工 (`u.end + 1`)”规则不变，前端界面说明这一区别。*
+   - **倒挂冲突定义**：当 `toDay(v.start) < toDay(u.end)` 时，倒挂天数 `overlapDays = toDay(u.end) - toDay(v.start) > 0`。
+   - **区分存量历史倒挂与本次编辑引入/加重的倒挂**：
+     - 记编辑前该依赖边 `u -> v` 的原倒挂天数为 `beforeOverlap = Math.max(0, toDay(u_before.end) - toDay(v_before.start))`（新建立的连线 `beforeOverlap = 0`）；
+     - 仅当编辑后 `afterOverlap > 0` 且（该边属于本次编辑直接/间接影响的范围且 `afterOverlap > beforeOverlap`，或为新连线导致的倒挂）时，列入本次编辑必须处理的 `conflicts` 列表；**不触碰、不报错与本次编辑无关的历史存量倒挂**。
+3. **局部级联顺延（`cascade: true` 仅限本次受影响子图）**：
+   - 确定本次编辑的起点任务 `rootTaskId`（`move`/`resize` 为 `taskId`，`link` 为 `toId`），沿依赖关系向下游求可达子图 `affectedSet`。
+   - 当 `editOperation.cascade === true` 时：**仅对 `affectedSet` 内的任务**按拓扑序检查其直接上游 `u`，若因本次编辑导致 `toDay(v.start) < toDay(u.end)`（即相对编辑前新增或加重了倒挂），自动将 `v` 顺延至 `newStart = u.end`、`newEnd = fromDay(toDay(u.end) + dur - 1)`（保持 `v` 原工期 `dur` 不变），并将被顺延的任务 ID 记入 `cascadedTaskIds`。**严禁顺手改动 `affectedSet` 之外的其他历史排期**。
+   - 当 `editOperation.cascade !== true` 且 `conflicts.length > 0` 时：返回 `valid: false`、`code: 'DEPENDENCY_CONFLICT'`，要求用户勾选级联顺延或调整日期解决倒挂后才能保存。
 
 #### 返回值结构
 ```js
 {
-  valid: true,                       // boolean: 是否通过无环与日期合法性校验
-  code: 'OK',                        // 'OK' | 'CYCLE_DETECTED' | 'INVALID_DATE_RANGE' | 'SELF_DEPENDENCY' | 'DUPLICATE_DEPENDENCY' | 'UNKNOWN_TASK'
+  valid: true,                       // boolean: 无环、日期合法且无未解决的新增/加重倒挂冲突时为 true
+  code: 'OK',                        // 'OK' | 'CYCLE_DETECTED' | 'DEPENDENCY_CONFLICT' | 'INVALID_DATE_RANGE' | 'SELF_DEPENDENCY' | 'DUPLICATE_DEPENDENCY' | 'UNKNOWN_TASK'
   message: '',                       // 错误或提示信息
   cyclePath: [],                     // 若 code === 'CYCLE_DETECTED'，返回环路节点 ID 数组
-  conflicts: [                       // 排期倒挂冲突列表（downstream.start < upstream.end）
+  conflicts: [                       // 本次编辑引入或加重的排期倒挂冲突列表（downstream.start < upstream.end）
     { upstreamId: 'T-3', downstreamId: 'T-5', upstreamEnd: '2026-11-20', downstreamStart: '2026-11-18', overlapDays: 2 }
   ],
-  cascadedTaskIds: ['T-5'],          // 当 cascade: true 时被自动顺延的下游任务 ID 列表
+  cascadedTaskIds: ['T-5'],          // 当 cascade: true 时在受影响子图内被自动顺延的下游任务 ID 列表
   suggestedReason: '调整 T-5 计划排期至 2026-11-20 ~ 2026-11-22', // 自动生成的变更原因预填文案
-  nextPlan: { project, milestones, tasks } // 应用变更后的新计划深拷贝对象（valid 为 false 时为 null）
+  nextPlan: { project, milestones, tasks } // 应用变更后的新计划深拷贝对象（结构/环错误时为 null；仅 DEPENDENCY_CONFLICT 时仍返回试算快照供界面高亮预览）
 }
 ```
 
@@ -64,15 +70,14 @@
    - 拖拽过程中通过 `pointermove` 实时调用 `previewPlanEdit(base.data, { type: 'resize', ... })`：
      - 浮动提示框（Tooltip）实时显示新起止日期与工期天数；
      - 若产生 `conflicts`，在冲突的下游任务条上叠加 `.conflict-highlight` 红色脉冲虚线框；
-     - 松开鼠标（`pointerup`）后打开规划确认弹窗（若存在冲突，提供「同时顺延下游冲突任务 (`cascade`)」勾选框），预填 `suggestedReason`，确认后携带打开时的 `base.revision` 调用 `POST /api/plan/save`。
+     - 松开鼠标（`pointerup`）后打开规划确认弹窗：若存在 `conflicts`，弹窗提示新增倒挂冲突并提供「同时顺延受影响的下游任务 (`cascade`)」开关（未解决新增/加重倒挂前禁用保存提交），确认后携带锁定时的 `base.revision` 调用 `POST /api/plan/save`。
+   - 在界面图例或规划说明中注明：「规划预检支持同日交接（下游可在上游结束当日开始）；模拟演练按完成后次日开工推演」。
 2. **SVG 依赖连线层与拖拽建连（Dependency Link Layer）**：
-   - 在甘特图时间线区域增加底层/顶层 `<svg class="gantt-links">` 图层，绘制任务间的依赖折线/贝塞尔曲线（带箭头 marker）；关键路径上的依赖线使用醒目的红色实线，普通依赖使用浅灰蓝线。
+   - 在甘特图时间线区域增加 `<svg class="gantt-links">` 图层，绘制任务间的依赖折线/贝塞尔曲线（带箭头 marker）；关键路径上的依赖线使用红色实线，普通依赖使用浅灰蓝线。
    - 在 `plannerMode === true` 时：
      - 每个任务条右侧显示输出锚点 `<i class="dep-anchor out" data-dep-from="T-x" title="拖拽至下游任务以建立依赖"></i>`，左侧显示输入锚点 `<i class="dep-anchor in" data-dep-to="T-y"></i>`；
-     - 从输出锚点按住拖拽至目标任务行或输入锚点时，绘制实时跟随指针的虚线连接线，并调用 `previewPlanEdit(..., { type: 'link', fromId, toId })`：
-       - 若 `valid === false`（如循环依赖），连接线变红并在状态栏提示 `message`，禁止松手提交；
-       - 若 `valid === true`，目标任务高亮为可放置状态（绿色边框），松手后弹出变更原因确认框并保存；
-     - 在规划模式下点击已有的依赖连线，可快捷解除该依赖（`type: 'unlink'`）。
+     - 从输出锚点拖拽至目标任务时，实时调用 `previewPlanEdit(..., { type: 'link', fromId, toId })`：若 `code === 'CYCLE_DETECTED'` 等错误则连线变红并禁止提交；若产生倒挂冲突则提示勾选级联顺延后保存；
+     - 在规划模式下点击已有的依赖连线，可确认解除该依赖（`type: 'unlink'`）。
 
 ---
 
@@ -86,48 +91,55 @@
   - 计算计划文件相对于 `project.repoRoot` 的相对路径 `relPlanPath`（使用 POSIX 斜杠）。
   - 执行 `git log -n <limit> --format=%H%x09%h%x09%ad%x09%an%x09%s --date=iso-strict -- <relPlanPath>`。
   - 对每个 commit，使用 `git show <hash>:<relPlanPath>` 读取当时的文件内容，并用 `parseFrontMatter` 与 `validate` 尝试解析：
-    - 仅保留能成功解析出有效 `tasks` 列表的快照点（忽略格式损坏的历史提交）；
-    - 提取当时的摘要指标：`taskCount`、`doneCount`、`overall`（调用 `compute(data, commitDate).summary.overall`）。
+    - 仅保留能成功解析出有效 `tasks` 列表且通过 `validate` 的历史快照点；
+    - 提取当时的摘要指标：`taskCount`、`doneCount`、`overall`（调用 `compute(data, commitDate).summary.overall`）；
+    - 按时间**从旧到新**排列 `commits` 数组，并将当前工作区实时状态单独放在顶层 `current` 字段。
 - **获取指定历史版本详情 `getPlanAtCommit(project, commitHash)`**：
   - 校验 `commitHash` 必须匹配 `/^[0-9a-f]{7,40}$/i`。
-  - 读取该 commit 下的 `plan.md`，解析为 `data`，并计算当时的 `metrics`。
+  - 读取该 commit 下的 `plan.md` 解析为 `data`，同时读取当前工作区计划（记录 `currentRevision`）并调用 `computeTimelineDiff(data, currentData)` 生成 `diff`。
 
 #### 2) 时间线演进对比纯函数（`web/analysis.js`）
 在 `web/analysis.js` 中新增导出纯函数 `computeTimelineDiff(baselinePlan, currentPlan)`：
 - 按任务 `id` 对比 `baselinePlan`（历史基线或某次历史 commit）与 `currentPlan`：
-- 返回每个任务的排期偏移与状态演进：
   ```js
   {
-     baselineProject: baselinePlan.project,
-     currentProject: currentPlan.project,
-     summary: {
-       addedCount: 2,
-       removedCount: 0,
-       shiftedCount: 5,         // start 或 end 发生变化的任务数
-       totalSlipDays: 8,        // 所有共同任务 (current.end - baseline.end) 之和
-     },
-     tasks: {
-       'T-4': {
-         status: 'common' | 'added' | 'removed',
-         baselineStart: '2026-11-19',
-         baselineEnd: '2026-11-25',
-         currentStart: '2026-11-19',
-         currentEnd: '2026-11-27',
-         startShiftDays: 0,     // toDay(currentStart) - toDay(baselineStart)
-         endShiftDays: 2,       // toDay(currentEnd) - toDay(baselineEnd)
-         durationDelta: 2,
-         progressDelta: 40,     // current.progress - baseline.progress
-       }
-     }
+    baselineProject: baselinePlan.project,
+    currentProject: currentPlan.project,
+    summary: {
+      addedCount: 2,
+      removedCount: 0,
+      shiftedCount: 5,         // 共同任务中 start 或 end 发生变化的任务数
+      totalSlipDays: 8,        // 所有共同任务 (toDay(current.end) - toDay(baseline.end)) 之和
+    },
+    tasks: {
+      'T-4': {
+        status: 'common' | 'added' | 'removed',
+        baselineStart: '2026-11-19',
+        baselineEnd: '2026-11-25',
+        currentStart: '2026-11-19',
+        currentEnd: '2026-11-27',
+        startShiftDays: 0,     // common 时为 toDay(currentStart) - toDay(baselineStart)，否则为 null
+        endShiftDays: 2,       // common 时为 toDay(currentEnd) - toDay(baselineEnd)，否则为 null
+        durationDelta: 2,      // common 时为 currentDur - baselineDur，否则为 null
+        progressDelta: 40,     // common 时为 current.progress - baseline.progress，否则为 null
+      }
+    }
   }
   ```
 
-#### 3) REST API 契约
+#### 3) REST API 契约（已对齐 `current` 单列与详情 `diff` 字段）
 - `GET /api/history?project=<id>&limit=30`：
-  - 返回该项目 `plan.md` 的 Git 历史版本列表（按时间从旧到新排序，便于时间轴从左到右回放，末尾附加 `current` 工作区当前状态）：
+  - `commits` 仅存放 Git 历史提交（从旧到新），当前工作区单列为顶层 `current`：
     ```json
     {
       "projectId": "default",
+      "current": {
+        "revision": "a1b2c3d4...",
+        "date": "2026-11-18",
+        "taskCount": 35,
+        "doneCount": 25,
+        "overall": 71.4
+      },
       "commits": [
         {
           "hash": "94252d6...",
@@ -144,12 +156,21 @@
     }
     ```
 - `GET /api/history?project=<id>&rev=<commitHash>`：
-  - 返回指定 commit 时的完整计划数据与与当前计划的 `diff`：
+  - 返回指定 commit 的历史计划 `data`、对比结果 `diff` 以及对比所用的当前计划版本号 `currentRevision`：
     ```json
     {
       "projectId": "default",
-      "commit": { "hash": "...", "shortHash": "...", "date": "2026-11-17", "subject": "..." },
-      "data": { "project": "...", "milestones": [...], "tasks": [...] }
+      "currentRevision": "a1b2c3d4...",
+      "commit": {
+        "hash": "94252d6...",
+        "shortHash": "94252d6",
+        "date": "2026-11-17",
+        "timestamp": "2026-11-17T18:20:00+08:00",
+        "author": "dev",
+        "subject": "feat(T-8..T-16): 完成 M2/M3 ..."
+      },
+      "data": { "project": "...", "milestones": [...], "tasks": [...] },
+      "diff": { "baselineProject": "...", "currentProject": "...", "summary": { ... }, "tasks": { ... } }
     }
     ```
 
@@ -157,14 +178,12 @@
 
 1. **甘特图控制栏新增「时间机器（Time Machine）」开关与回放条**：
    - 在甘特图顶部控制栏新增 `<button type="button" id="timeMachineBtn">时间机器</button>` 与 `<label><input type="checkbox" id="showBaselineGhost"> 叠加基线幽灵条</label>`。
-   - 展开时间机器面板 `#timeMachineBar`：
-     - 包含 `<button id="tmPlayPause">▶ 播放</button>`、时间轴滑块 `<input type="range" id="tmSlider" min="0" max="N">`、倍速选择（`1x / 2x`）、当前帧信息（Commit 短哈希、提交日期、提交说明、当时总进度）以及 `<button id="tmExit">退出回放</button>`。
+   - 展开时间机器面板 `#timeMachineBar`：包含 `<button id="tmPlayPause">▶ 播放</button>`、时间轴滑块 `<input type="range" id="tmSlider">`、倍速选择（`1x / 2x`）、当前帧信息（Commit 短哈希、提交日期、提交说明、当时总进度）以及 `<button id="tmExit">退出回放</button>`。
 2. **回放模式与基线幽灵条（Ghost Bars）**：
    - 当勾选「叠加基线幽灵条」或处于「时间机器回放」模式时：
-     - 调用 `computeTimelineDiff(baselineData, currentData)`；
-     - 在每个任务行的甘特图背景层渲染半透明虚线边框的**历史基线条（`.bar.ghost`）**，直观呈现原定排期位置 vs 现行排期位置；若现行结束日比基线推迟（`endShiftDays > 0`），显示 `+N天` 偏移角标。
-   - 当拖动时间机器滑块或点击「▶ 播放」自动步进时：
-     - 驾驶舱甘特图、KPI 卡片与燃尽图实时渲染所选历史帧的数据（顶部状态栏显示醒目的「历史回放模式 · 只读」横幅，期间禁用编辑操作），点击「退出回放」立即恢复到最新实时状态。
+     - 若回放期间本地 `last.revision` 与接口返回的 `currentRevision` 不一致，前端可直接使用本地最新的 `last.data` 调用 `computeTimelineDiff(historicalData, last.data)` 刷新对比基准；
+     - 在每个任务行的甘特图背景层渲染半透明虚线边框的**历史基线条（`.bar.ghost`）**；若现行结束日比基线推迟（`endShiftDays > 0`），显示 `+N天` 偏移角标。
+   - 回放历史帧期间，顶栏显示「历史回放模式 · 只读」提示横幅并禁用所有写操作，点击「退出回放」恢复实时视图。
 
 ---
 
@@ -176,17 +195,22 @@
 - **输入参数**：
   - `plan`: 原始计划数据对象 `{ project, milestones, tasks }`（深拷贝处理，不修改入参）。
   - `options`:
-    - `maskOwners` (`boolean`, 默认 `false`)：是否脱敏负责人姓名。若为 `true`，按负责人出现顺序映射为固定代号 `成员-A`、`成员-B`、`成员-C`……（同一负责人保持同一代号，保证人员负载表仍然具备分析价值）。
-    - `stripInternalNotes` (`boolean`, 默认 `false`)：是否移除任务标题中括号内的内部备注（或隐藏关联 Git 提交记录）。
-    - `customTitle` (`string`, 可选)：自定义导出的项目展示标题。
-- **返回值**：脱敏后的 `{ plan: sanitizedPlan, ownerMap: { 'codex': '成员-A', ... } }`。
+    - `maskOwners` (`boolean`, 默认 `false`)：是否脱敏负责人姓名。若为 `true`，按负责人首次出现顺序映射为固定代号 `成员-A`、`成员-B`、`成员-C`……（同一负责人保持同一代号，保证人员负载表仍具分析价值）。
+    - `stripInternalNotes` (`boolean`, 默认 `false`)：是否剔除显式标记的内部备注。**注意：不得盲目删除普通括号内容（如 `(环检测与下游冲突顺延试算)` 属于正常标题）**；仅删除标题中匹配 `/\s*(?:\[内部[:：][^\]]*\]|【内部[:：][^】]*】|<!--[\s\S]*?-->)\s*/g` 的显式内部标记。
+    - `customTitle` (`string`, 可选)：自定义导出的项目展示标题（若非空则替换 `sanitizedPlan.project`）。
+- **返回值**：
+  - `{ plan: sanitizedPlan, ownerMap: { 'codex': '成员-A', ... } }`。
+  - **脱敏源码安全红线**：`ownerMap` 仅作为函数返回值供调用方内存预览使用，**`buildStandaloneHtml` 严禁将 `ownerMap` 或脱敏前的原负责人标识写入导出的 HTML 源码中**。
 
 #### 2) 单文件自包含 HTML 生成器 `buildStandaloneHtml(payload, options)`（`server/exporter.mjs`）
-- 生成一份**完全内联、无需任何外部请求、双击 `.html` 即可在任意现代浏览器离线交互查看**的单文件驾驶舱：
+- **输入与脱敏覆盖范围**：
+  - 当 `options.maskOwners === true` 时：HTML 内仅包含替换后的 `成员-A / 成员-B` 数据；且自动强制排除 Git 提交历史（因为 Git commit author/message 可能包含实名或内部信息）。
+  - 当 `options.stripInternalNotes === true` 时：导出包中**完全排除 Git 提交历史 `commits` 与 `plan.md` 的 `# 计划说明` 变更记录正文**。
+- **自包含离线交互能力**：
   - 内联 `web/style.css` 样式表；
-  - 内联预计算好的脱敏数据快照 `window.__OFFLINE_PLAN__ = ...`（安全转义 `</script>` 与 `<` 为 `\u003c` 防止 XSS 注入）；
-  - 包含完整的可交互只读视图能力：KPI 卡片、甘特图（支持「适应 / 日 / 周 / 月」缩放档位切换、里程碑展开/折叠、点击任务查看详情）、SVG 燃尽图（支持按里程碑筛选）、里程碑进度卡片、风险预警列表与人员负载热力图；
-  - 页面顶栏标注 `离线只读快照 · 导出于 YYYY-MM-DD HH:mm`，自动隐藏所有写操作按钮（新建/编辑任务、同步 Git、Webhook 配置等）。
+  - 内联安全转义后的数据快照 `window.__OFFLINE_PLAN__ = ...`（将 `<` 转义为 `\u003c`、`\u2028/\u2029` 转义防止脚本截断与 XSS）；
+  - 包含完整的可交互只读视图：KPI 卡片、甘特图（支持「适应 / 日 / 周 / 月」缩放切换、里程碑展开/折叠、点击任务查看详情）、SVG 燃尽图（支持按里程碑筛选）、里程碑卡片、风险列表与人员负载表；
+  - 页面顶栏标注 `离线只读快照 · 导出于 YYYY-MM-DD`，不包含任何写操作按钮或网络请求。
 
 #### 3) REST API 契约
 - `POST /api/export/html?project=<id>`：
@@ -199,18 +223,18 @@
       "customTitle": "任务时间线驾驶舱（对外汇报版）"
     }
     ```
-  - **响应**：`200 OK`，`Content-Type: text/html; charset=utf-8`，返回 `{ ok: true, filename: "task-orchestration-2026-11-18.html", html: "<!doctype html>..." }` JSON（或根据 `Accept` 直接返回 JSON 供前端触发 Blob 下载）。统一约定返回 JSON：`200 { ok: true, filename, html }`。
+  - **响应**：统一返回 JSON `200 { ok: true, filename: "task-orchestration-2026-11-18.html", html: "<!doctype html>..." }`。
 
 ### 3.2 离线驾驶舱导出弹窗与一键分享交互（T-31 · `web/index.html`、`web/app.js`）
 
 - 在侧栏「进度报告」卡片新增 **「导出离线网页 (.html)」** 按钮（`#exportHtmlBtn`）。
 - 点击后打开 `<dialog id="exportHtmlDialog" class="task-dialog">`：
-  - **导出标题**：默认当前项目名，可修改为汇报专用名称；
+  - **导出标题**：默认当前项目名，可修改为对外汇报名称；
   - **脱敏选项**：
-    - `<input type="checkbox" id="exportMaskOwners">` 匿名化负责人（替换为 成员-A / 成员-B）
-    - `<input type="checkbox" id="exportStripNotes">` 隐藏 Git 提交历史与内部备注
-  - **预览摘要**：实时显示将导出的里程碑数、任务数及是否启用脱敏；
-  - 点击「生成并下载 HTML」调用 `POST /api/export/html`，拿到 `html` 字符串后通过 `Blob` 触发浏览器下载 `filename`，并在状态栏提示导出成功。
+    - `<input type="checkbox" id="exportMaskOwners">` 匿名化负责人（替换为 成员-A / 成员-B，源码不留原名）
+    - `<input type="checkbox" id="exportStripNotes">` 排除 Git 提交记录、计划变更说明及 `[内部:...]` 标记
+  - **安全提示**：弹窗内提示「注：普通括号内容会保留，请导出前确认任务标题不含敏感信息」；
+  - 点击「生成并下载 HTML」调用 `POST /api/export/html` 并触发浏览器下载。
 
 ---
 
@@ -218,7 +242,7 @@
 
 ### 4.1 工作日历与工时侧车服务及预估准确率算法（T-32 · `server/capacity.mjs`、`web/analysis.js`、`server/server.mjs`）
 
-> **设计原则**：严格遵守 `PLAN_SPEC.md`，不改动 `plan.md` 的 YAML 字段。工作日历与任务级故事点/预估工时存储在项目侧车文件 `plan/capacity.json`（若多项目则在目标项目的 `dirname(project.planPath)/capacity.json`，并加入 `.gitignore`；文件不存在时自动使用默认配置：周末休假、每日 8 小时、按有效工作日折算工时）。
+> **设计原则**：严格遵守 `PLAN_SPEC.md`，不改动 `plan.md` 的 YAML 字段。工作日历与任务级故事点/工时存储在项目侧车文件 `plan/capacity.json`（多项目则在目标项目的 `dirname(project.planPath)/capacity.json`，已加入 `.gitignore`）。
 
 #### 1) 侧车配置文件结构 `capacity.json`
 ```json
@@ -233,61 +257,97 @@
 }
 ```
 - **有效工作日判断规则**：
-  - 若日期在 `holidays` 中 $\rightarrow$ 非工作日；
-  - 否则若日期在 `workdays`（调休补班日）中 $\rightarrow$ 工作日；
-  - 否则若 `excludeWeekends === true` 且为周六/周日 $\rightarrow$ 非工作日；
-  - 其余为有效工作日。
+  1. 若日期在 `holidays` 中 $\rightarrow$ 非工作日；
+  2. 否则若日期在 `workdays`（调休补班日）中 $\rightarrow$ 工作日；
+  3. 否则若 `excludeWeekends !== false`（默认 `true`）且为周六/周日 $\rightarrow$ 非工作日；
+  4. 其余为有效工作日。
 
-#### 2) 纯函数：`computeCapacityMetrics(plan, capacityConfig = {}, todayStr)`（`web/analysis.js`）
-在 `web/analysis.js` 中新增导出纯函数：
-- **辅助纯函数 `countWorkingDays(startStr, endStr, calendarConfig)`**：计算 `[startStr, endStr]` 闭区间内的有效工作日天数（至少为 `1`，若任务全排在周末/节假日则按 `0` 计并在 `calendarWarnings` 中预警）。
-- **每项任务的精细化核算**：
-  - `workingDays`: 计划区间内的有效工作日数；
-  - `defaultEstimateHours`: `Math.max(1, workingDays) * hoursPerDay`；
-  - `estimateHours`: 若 `capacityConfig.tasks[id]?.estimateHours > 0` 则取配置值，否则取 `defaultEstimateHours`；
-  - `storyPoints`: `capacityConfig.tasks[id]?.storyPoints ?? Math.max(1, workingDays)`；
-  - `actualWorkingDays`: 若任务有 `actualStart`，计算 `actualStart` 至 `actualEnd || todayStr` 的有效工作日数；
-  - `actualHours`: 若配置了 `actualHours` 则取配置值；否则若 `status === 'done'` 取 `Math.max(1, actualWorkingDays) * hoursPerDay`；
-  - `inflationRatio`（仅 `done` 任务）：`actualHours / estimateHours`（工期/工时膨胀系数，$1.0$ 表示精准，$>1.0$ 表示超支，$<1.0$ 表示提前）；
-  - `accuracyPct`（仅 `done` 任务）：$\max(0, 1 - |\text{actualHours} - \text{estimateHours}| / \text{estimateHours}) \times 100$。
-- **团队整体与按负责人聚合统计**：
-  ```js
-  {
-    hoursPerDay: 8,
-    totalStoryPoints: 68,
-    completedStoryPoints: 50,
-    totalEstimateHours: 544,
-    totalActualHours: 412,
-    overallAccuracyPct: 86.5,        // 已完成任务的平均预估准确率(%)
-    overallInflationRatio: 1.08,     // 已完成任务的总实际工时 / 总预估工时
-    calendarWarnings: [              // 排在节假日或非工作日的任务提醒
-      { id: 'T-8', message: '计划区间包含 2 天周末/节假日' }
-    ],
-    byOwner: [
-      { owner: 'codex', taskCount: 18, doneCount: 13, storyPoints: 40, estimateHours: 320, actualHours: 240, accuracyPct: 88.2, inflationRatio: 1.04 }
-    ],
-    tasks: {
-      'T-1': { workingDays: 1, storyPoints: 1, estimateHours: 8, actualHours: 8, inflationRatio: 1, accuracyPct: 100 }
+#### 2) 纯函数：`countWorkingDays` 与 `computeCapacityMetrics`（`web/analysis.js`）
+在 `web/analysis.js` 中新增导出纯函数（**已明确纯休息日返回 `0` 与「填报 vs 推算」准确率统计口径**）：
+- **`countWorkingDays(startStr, endStr, calendarConfig = {})`**：
+  - 精确返回 `[startStr, endStr]` 闭区间内的有效工作日天数（整数 $\ge 0$）。
+  - **纯休息日区间严格返回 `0`**（不做最低 1 天兜底；最低 1 天仅用于下方计算默认预估工时 `defaultEstimateHours` 与默认故事点）。
+- **`computeCapacityMetrics(plan, capacityConfig = {}, todayStr)`**：
+  - **单任务核算口径（区分 `reported` 填报值与 `inferred` 推算值）**：
+    - `calendarDays`: `toDay(task.end) - toDay(task.start) + 1`；
+    - `workingDays`: `countWorkingDays(task.start, task.end, capacityConfig)`；若 `workingDays === 0`，在 `calendarWarnings` 中生成预警 `{ id: task.id, message: '计划排期完全处于周末或节假日(有效工作日为 0)' }`；
+    - `defaultEstimateHours`: `Math.max(1, workingDays) * hoursPerDay`；
+    - `estimateSource`: 若 `capacityConfig.tasks?.[id]?.estimateHours > 0` 则为 `'reported'`，否则为 `'inferred'`；
+    - `estimateHours`: `estimateSource === 'reported' ? capacityConfig.tasks[id].estimateHours : defaultEstimateHours`；
+    - `storyPoints`: `capacityConfig.tasks?.[id]?.storyPoints > 0 ? capacityConfig.tasks[id].storyPoints : Math.max(1, workingDays)`；
+    - `actualWorkingDays`: 若有 `actualStart`，计算 `countWorkingDays(task.actualStart, task.actualEnd || todayStr, capacityConfig)`，否则为 `null`；
+    - `actualSource`:
+      - 若 `capacityConfig.tasks?.[id]?.actualHours > 0` $\rightarrow$ `'reported'`（实测填报）；
+      - 否则若 `task.status === 'done'` $\rightarrow$ `'inferred'`（按实际起止日期推算）；
+      - 否则 $\rightarrow$ `'none'`；
+    - `actualHours`:
+      - 若 `actualSource === 'reported'` $\rightarrow$ `capacityConfig.tasks[id].actualHours`；
+      - 若 `actualSource === 'inferred'` $\rightarrow$ `Math.max(1, actualWorkingDays ?? 1) * hoursPerDay`；
+      - 否则 $\rightarrow$ `null`；
+    - `inflationRatio` 与 `accuracyPct`：
+      - 仅当 `task.status === 'done'` 且 `actualSource === 'reported'`（**已完成且有实测填报工时**）时计算单任务的实测准确率与膨胀系数：
+        - `inflationRatio = Math.round((actualHours / estimateHours) * 100) / 100`
+        - `accuracyPct = Math.round(Math.max(0, 1 - Math.abs(actualHours - estimateHours) / estimateHours) * 1000) / 10`
+      - 若未完成或仅为推算工时（`actualSource !== 'reported'`），单任务的 `inflationRatio` 与 `accuracyPct` 为 `null`（避免用日期推算值制造虚假的准确率）。
+  - **团队整体与按负责人聚合统计口径**：
+    - `sampledDoneCount`: 已完成且 `actualSource === 'reported'` 的实测样本任务数；
+    - `overallAccuracyPct`: 若 `sampledDoneCount > 0`，为所有实测样本任务 `accuracyPct` 的算术平均值（保留 1 位小数）；**若 `sampledDoneCount === 0`，严格返回 `null`**；
+    - `overallInflationRatio`: 若 `sampledDoneCount > 0`，为所有实测样本任务 ` ∑ actualHours / ∑ estimateHours`（保留 2 位小数）；**若 `sampledDoneCount === 0`，严格返回 `null`**；
+    - `byOwner` 中每个负责人的 `sampledDoneCount`、`accuracyPct`、`inflationRatio` 遵循完全相同的实测样本口径。
+
+#### 返回值结构示例
+```js
+{
+  hoursPerDay: 8,
+  totalStoryPoints: 68,
+  completedStoryPoints: 50,
+  totalEstimateHours: 544,
+  reportedActualHours: 30,           // 已填报实测工时总和
+  inferredActualHours: 382,          // 未填报但按实际日期推算的工时总和
+  sampledDoneCount: 2,               // 参与准确率计算的实测已完成样本数
+  overallAccuracyPct: 87.5,          // sampledDoneCount === 0 时为 null
+  overallInflationRatio: 1.05,       // sampledDoneCount === 0 时为 null
+  calendarWarnings: [
+    { id: 'T-8', message: '计划排期完全处于周末或节假日(有效工作日为 0)' }
+  ],
+  byOwner: [
+    {
+      owner: 'codex',
+      taskCount: 18,
+      doneCount: 13,
+      sampledDoneCount: 2,
+      storyPoints: 40,
+      estimateHours: 320,
+      reportedActualHours: 30,
+      inferredActualHours: 210,
+      accuracyPct: 87.5,             // sampledDoneCount === 0 时为 null
+      inflationRatio: 1.05           // sampledDoneCount === 0 时为 null
+    }
+  ],
+  tasks: {
+    'T-26': {
+      calendarDays: 2,
+      workingDays: 2,
+      storyPoints: 3,
+      estimateSource: 'reported',
+      estimateHours: 16,
+      actualSource: 'reported',
+      actualHours: 14,
+      inflationRatio: 0.88,
+      accuracyPct: 87.5
     }
   }
-  ```
+}
+```
 
 #### 3) REST API 契约
-- `GET /api/capacity?project=<id>`：
-  - 读取该项目的 `capacity.json`（不存在则返回默认配置），并结合当前 `plan.md` 返回 `{ config, metrics }`。
-- `POST /api/capacity?project=<id>`：
-  - 请求体：`{ hoursPerDay, excludeWeekends, holidays, workdays, tasks }`。
-  - 校验合法性（`hoursPerDay` 为 $1 \sim 24$ 的数字，日期格式必须为 `YYYY-MM-DD`，`storyPoints/estimateHours/actualHours` 为非负数），原子写入 `capacity.json`，返回 `200 { ok: true, config, metrics }`。
+- `GET /api/capacity?project=<id>`：返回 `{ projectId, config, metrics }`。
+- `POST /api/capacity?project=<id>`：校验并保存 `{ hoursPerDay, excludeWeekends, holidays, workdays, tasks }`，返回 `200 { ok: true, projectId, config, metrics }`。
 
 ### 4.2 工作日历与工时故事点配置面板及预估偏差视图（T-33 · `web/index.html`、`web/app.js`）
 
-1. **侧栏新增「工时与预估核算」卡片（`#capacityCard`）**：
-   - 标题栏提供 **「配置日历/工时」** 按钮（`#configCapacityBtn`）；
-   - 摘要指标展示：`总故事点 (已完成/总计)`、`总预估工时`、`团队预估准确率 (%)`、`平均工期膨胀系数 (x)`；
-   - 按负责人展示预估准确率与工时对比微条形图；若有节假日排期提醒（`calendarWarnings`），展示可点击定位的提示项。
-2. **日历与工时配置弹窗（`#capacityDialog`）**：
-   - 支持设置「每日标准工时 (`hoursPerDay`)」、「自动排除周末 (`excludeWeekends`)」、自定义「节假日列表 (`holidays`)」与「调休补班日 (`workdays`)」；
-   - 提供任务工时/故事点快速编辑表格（支持为任务填入 `storyPoints`、`estimateHours`、`actualHours`），保存后调用 `POST /api/capacity` 并刷新视图。
+- 侧栏「工时与预估核算」卡片明确区分展示「填报工时」与「推算工时」，准确率旁标注样本数 `（基于 N 项实测样本）`；当 `sampledDoneCount === 0` 时显示「暂无实测样本（请在配置中填报实际工时）」。
+- 配置弹窗支持编辑工作日历（节假日/调休补班日）及各任务的 `storyPoints / estimateHours / actualHours`。
 
 ---
 
@@ -297,63 +357,67 @@
 
 #### 1) 侧车配置文件 `plan/integrations.json`（已加入 `.gitignore`）
 按项目存储平台连接配置与任务-Issue 映射表（绝不将 Token 明文返回给前端）：
-```json
-{
-  "projects": {
-    "default": {
-      "provider": "github",
-      "apiBase": "https://api.github.com",
-      "repo": "owner/repo",
-      "token": "ghp_xxx",
-      "enabled": true,
-      "labelPrefix": "milestone:",
-      "issueMap": {
-        "T-26": { "number": 42, "url": "https://github.com/owner/repo/issues/42", "state": "open", "syncedAt": "2026-11-18T12:00:00Z" }
-      }
-    }
-  }
-}
-```
-- **安全与网络边界（延续 `webhooks.mjs` 标准）**：
-  - `apiBase` 仅允许 `https:` 协议且通过公网 DNS/IP 校验（拒绝 `127.0.0.1`、`localhost`、局域网私有 IP 段等 SSRF 风险地址）；
-  - `GET /api/integrations` 响应中 `token` 固定返回 `""`，以 `tokenConfigured: true/false` 表示是否已保存凭证；更新配置时若 `token` 为空字符串，自动沿用原已保存的 `token`。
+- `apiBase` 仅允许公网 `https:` 地址（复用 SSRF 私网地址拦截校验）；
+- `GET /api/integrations` 响应中 `token` 固定为 `""`，通过 `tokenConfigured: boolean` 标识是否已配置凭证；保存时若 `token === ""` 则保留原已存 Token。
 
-#### 2) 双向同步核心逻辑（`server/integrations.mjs`）
-提供适配器支持 `github` 与 `gitlab` 两种平台，并支持传入自定义 `transport` 函数以便单测无网络 Mock 验证：
+#### 2) 双向同步与冲突裁决规则（已明确版本锁、已完成任务不自动回退、推送需指定任务）
 - **导出纯函数 `buildIssuePayload(provider, task, milestone)`**：
-  - 构造创建/更新远端 Issue 的请求载荷：
-    - Title: `[${task.id}] ${task.title}`
-    - Body: 包含任务负责人 `owner`、所属里程碑 `milestone`、计划日期 `start ~ end`、前置依赖 `deps`、当前进度 `progress%`；
-    - State: `task.status === 'done' ? 'closed' : 'open'`；
-    - Labels: `['task-orchestration', `milestone:${task.milestone}`, `status:${task.status}`]`。
-- **导出纯函数 `reconcileIssuesWithPlan(plan, remoteIssues, issueMap = {})`**：
-  - 匹配规则：优先按 `issueMap[task.id].number` 匹配；若未映射，则按远端 Issue 标题正则 `/^\[(T-\d+)\]\s*(.+)$/` 自动识别任务 ID 并建立绑定。
-  - **拉取同步（`mode: 'pull'`，远端 Issue $\rightarrow$ 本地 `plan.md`）**：
-    - 若远端 Issue 状态为 `closed` 且本地任务尚未 `done`：将任务更新为 `status: 'done'`、`progress: 100`、`actualStart: task.actualStart || today`、`actualEnd: today`；
-    - 若远端 Issue 状态为 `open` 且包含标签 `status:blocked`：将本地任务更新为 `status: 'blocked'`；
-    - 若远端 Issue 状态为 `open` 且包含标签 `status:doing`（且本地为 `todo`）：将本地任务更新为 `status: 'doing'`、`progress: Math.max(10, task.progress)`、`actualStart: today`；
-    - 所有改动通过 `updatePlanMarkdown` + `verifyTaskUpdates` 写回 `plan.md`。
-  - **推送同步（`mode: 'push'`，本地 `plan.md` $\rightarrow$ 远端 Issue）**：
-    - 对选定或全部任务：若尚未关联 Issue 则调用平台 API 创建新 Issue 并记录到 `issueMap`；若已关联且标题/状态有差异则调用 PATCH/PUT 更新远端 Issue 状态（如本地已 `done` 则自动关闭远端 Issue）。
+  - Title: `[${task.id}] ${task.title}`
+  - State: `task.status === 'done' ? 'closed' : 'open'`
+  - Labels: `['task-orchestration', \`milestone:${task.milestone}\`, \`status:${task.status}\`]`
+- **导出纯函数 `reconcileIssuesWithPlan(plan, remoteIssues, issueMap = {}, todayStr)`**：
+  - 匹配规则：优先按 `issueMap[task.id]?.number` 匹配；未映射时按远端 Issue 标题正则 `/^\[(T-\d+)\]\s*(.+)$/` 识别。
+  - **拉取同步裁决规则（`direction: 'pull'`）**：
+    1. **首版绝不自动回退本地已完成任务**：若本地任务 `task.status === 'done'`，而远端 Issue 处于 `open` 或带有 `status:blocked` / `status:doing` 标签，**不修改本地任务状态**，将其加入 `skippedConflicts: [{ id: task.id, number: issue.number, localStatus: 'done', remoteState: issue.state, reason: '本地任务已完成，不自动回退状态' }]` 供前端展示提醒；
+    2. 若本地任务未完成（`status !== 'done'`）且远端 Issue 为 `closed`：将本地任务更新为 `status: 'done'`、`progress: 100`、`actualStart: task.actualStart || todayStr`、`actualEnd: todayStr`；
+    3. 若本地任务未完成且远端 Issue 为 `open`：
+       - 含标签 `status:blocked` $\rightarrow$ 更新本地为 `status: 'blocked'`（若原为 `todo` 则 `actualStart: task.actualStart || todayStr`）；
+       - 含标签 `status:doing` 且本地为 `todo` $\rightarrow$ 更新本地为 `status: 'doing'`、`progress: Math.max(10, task.progress)`、`actualStart: todayStr`。
+  - **拉取写回与版本锁校验**：
+    - 拉取同步仅更新任务执行态字段（`status / progress / actualStart / actualEnd`），不改动计划结构与排期，因此无需填写规划者结构变更 `reason`；
+    - 支持 `dryRun: true`（仅拉取远端 Issue 并返回 `proposedUpdates` 与 `skippedConflicts` 预览，不写磁盘）；
+    - 当 `dryRun !== true` 正式写回 `plan.md` 时：**请求体必须携带 `expectedRevision`**，服务端校验当前 `plan.md` 的 `revision === expectedRevision`（不一致返回 `409 { message: "计划已变化，请重新预览后再确认同步" }`），校验通过后使用 `updatePlanMarkdown` + `verifyTaskUpdates` 写回。
+  - **推送安全限制（`direction: 'push'`，防止误建大批 Issue）**：
+    - 默认要求请求体传入非空数组 `taskIds: ['T-26', ...]`，仅对显式选中的任务创建或更新远端 Issue；
+    - 若未传 `taskIds` 或为空数组，必须显式传入 `allowAll: true`（前端需经二次确认），否则服务端返回 `400 { message: "请先选择要推送的任务，或显式确认全量推送(allowAll)" }`。
 
 #### 3) REST API 契约
-- `GET /api/integrations?project=<id>`：
-  - 返回当前项目的集成配置（脱敏 `token: ""`, `tokenConfigured: boolean`）及 `issueMap` 绑定状态表。
-- `POST /api/integrations?project=<id>`：
-  - 保存当前项目的 `provider`、`apiBase`、`repo`、`token`、`enabled` 配置。
+- `GET /api/integrations?project=<id>`：返回脱敏配置与 `issueMap`。
+- `POST /api/integrations?project=<id>`：保存项目集成配置。
 - `POST /api/integrations/sync?project=<id>`：
-  - 请求体：`{ "direction": "pull" | "push", "taskIds": ["T-26"] }`（`taskIds` 可选，缺省同步全部任务）。
-  - 返回：`200 { ok: true, direction, created: [...], updated: [...], touchedTasks: [...], issueMap }`。
+  - **请求体**：
+    ```json
+    {
+      "direction": "pull",
+      "dryRun": false,
+      "expectedRevision": "a1b2c3d4...",
+      "taskIds": ["T-26"],
+      "allowAll": false
+    }
+    ```
+  - **响应**：
+    ```json
+    {
+      "ok": true,
+      "direction": "pull",
+      "dryRun": false,
+      "created": [],
+      "updated": ["T-26"],
+      "touchedTasks": [{ "id": "T-26", "beforeStatus": "doing", "afterStatus": "done" }],
+      "skippedConflicts": [
+        { "id": "T-1", "number": 10, "localStatus": "done", "remoteState": "open", "reason": "本地任务已完成，不自动回退状态" }
+      ],
+      "issueMap": { ... }
+    }
+    ```
 
 ### 5.2 平台集成配置弹窗与任务 Issue 绑定交互（T-35 · `web/index.html`、`web/app.js`）
 
-1. **顶栏或侧栏新增「平台同步 (Issue)」入口**：
-   - 在顶栏 `syncGit` 按钮旁或侧栏新增 **「Issue 同步」** 按钮（`#issueSyncBtn`）与 **「配置平台」** 按钮（`#configIntegrationBtn`）。
-2. **平台配置弹窗（`<dialog id="integrationDialog">`）**：
-   - 支持选择平台类型（`GitHub` / `GitLab`）、填写 API 地址（默认 `https://api.github.com` 或 `https://gitlab.com/api/v4`）、仓库标识（如 `owner/repo` 或项目 ID）、Access Token（密码框，已配置时显示占位提示）；
-   - 提供「从远端 Issue 拉取状态 (`pull`)」与「推送任务至远端 Issue (`push`)」快捷操作按钮，并反馈同步结果（新建了几个 Issue、更新了哪些任务）。
-3. **任务详情与甘特图联动展示**：
-   - 若某任务已在 `issueMap` 中绑定了远端 Issue，在甘特图底部详情栏 `#detail` 及任务编辑弹窗中显示可点击的 Issue 徽章链接（如 `<a href="..." target="_blank" rel="noopener">#42 (open)</a>`），并支持单独对该任务点击「同步此任务 Issue」。
+1. **平台配置与同步弹窗（`<dialog id="integrationDialog">`）**：
+   - 支持配置 `GitHub / GitLab`、API 地址、仓库标识与 Token；
+   - **拉取流程**：点击「预览远端拉取」先以 `dryRun: true` 请求，展示将更新的任务及被跳过的已完成冲突项（`skippedConflicts`），点击「确认写入」时携带当前锁定的 `expectedRevision` 执行正式拉取；
+   - **推送流程**：默认提供任务多选列表（或在任务详情中单任务一键推送），全量推送需勾选确认框后传 `allowAll: true`。
+2. **任务详情 Issue 徽章**：已绑定 Issue 的任务在详情栏显示 `#编号 (open/closed)` 外部链接徽章。
 
 ---
 
@@ -361,13 +425,13 @@
 
 | 任务 ID | 方向 | 负责人 | 核心交付物与修改文件 | 关键验收点 |
 |---|---|---|---|---|
-| **T-26** | 方向一 | `codex` | `web/metrics.js`, `tests/simulation.test.mjs` | `previewPlanEdit` 纯函数支持平移、拉伸、建连、断连，准确检出环路、排期倒挂冲突及级联顺延 |
-| **T-27** | 方向一 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 规划模式下甘特条支持双端拉伸改期、SVG 依赖连线渲染、拖拽锚点建立/解除依赖与冲突高亮 |
-| **T-28** | 方向二 | `codex` | `server/history.mjs`, `server/server.mjs`, `web/analysis.js`, `tests/` | `GET /api/history` 提取 Git 计划演进快照，`computeTimelineDiff` 准确计算基线偏移 |
+| **T-26** | 方向一 | `codex` | `web/metrics.js`, `tests/simulation.test.mjs` | `previewPlanEdit` 允许同日交接，检出环路与新增/加重倒挂冲突，`cascade` 仅顺延本次受影响子图 |
+| **T-27** | 方向一 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 规划模式下甘特条双端拉伸、SVG 依赖连线与拖拽建连/断连、新增倒挂冲突必解拦截与级联顺延勾选 |
+| **T-28** | 方向二 | `codex` | `server/history.mjs`, `server/server.mjs`, `web/analysis.js`, `tests/` | `GET /api/history` 顶层单列 `current`、列表仅放 Git 历史，详情返回 `data`、`diff` 与 `currentRevision` |
 | **T-29** | 方向二 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 时间机器回放控制栏、滑块播放历史帧、甘特图叠加半透明历史基线幽灵条与偏移角标 |
-| **T-30** | 方向三 | `codex` | `server/exporter.mjs`, `web/analysis.js`, `server/server.mjs`, `tests/` | `sanitizePlanForShare` 脱敏纯函数与 `POST /api/export/html` 生成零外部依赖的自包含可交互 HTML |
-| **T-31** | 方向三 | `antigravity` | `web/index.html`, `web/app.js` | 离线驾驶舱导出配置弹窗（自定义标题、匿名化负责人、隐藏备注）与一键下载 `.html` |
-| **T-32** | 方向四 | `codex` | `server/capacity.mjs`, `web/analysis.js`, `server/server.mjs`, `tests/` | `GET/POST /api/capacity` 侧车服务、`countWorkingDays` 工作日历与 `computeCapacityMetrics` 预估准确率核算 |
-| **T-33** | 方向四 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 侧栏工时与预估准确率卡片、负责人偏差对比条、工作日历与任务故事点/工时配置弹窗 |
-| **T-34** | 方向五 | `codex` | `server/integrations.mjs`, `server/server.mjs`, `tests/` | GitHub/GitLab 适配器、SSRF 防护、Token 掩码、`reconcileIssuesWithPlan` 及 `/api/integrations` 接口 |
-| **T-35** | 方向五 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 代码托管平台配置弹窗、一键双向同步（Push/Pull）交互、任务详情 Issue 链接徽章展示 |
+| **T-30** | 方向三 | `codex` | `server/exporter.mjs`, `web/analysis.js`, `server/server.mjs`, `tests/` | `sanitizePlanForShare` 不将 `ownerMap` 写入 HTML、不误删正常括号，脱敏排除 Git 历史与计划说明 |
+| **T-31** | 方向三 | `antigravity` | `web/index.html`, `web/app.js` | 离线驾驶舱导出配置弹窗（自定义标题、匿名化负责人、排除提交与内部标记、标题检查提醒） |
+| **T-32** | 方向四 | `codex` | `server/capacity.mjs`, `web/analysis.js`, `server/server.mjs`, `tests/` | `countWorkingDays` 纯休息日返回 `0`；区分填报与推算工时，准确率仅统计已完成实测样本并附样本数 |
+| **T-33** | 方向四 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 侧栏工时卡片区分「填报/推算」与样本数（无样本显示暂无数据），工作日历与任务工时配置弹窗 |
+| **T-34** | 方向五 | `codex` | `server/integrations.mjs`, `server/server.mjs`, `tests/` | 拉取支持 `dryRun` 预览与 `expectedRevision` 校验、不自动回退本地 `done` 任务；推送默认要求明确 `taskIds` |
+| **T-35** | 方向五 | `antigravity` | `web/index.html`, `web/app.js`, `web/style.css` | 平台配置弹窗、拉取预览确认与冲突提示、单任务/指定任务推送交互、任务详情 Issue 链接徽章 |
