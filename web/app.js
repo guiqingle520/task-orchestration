@@ -1379,8 +1379,8 @@ function renderLoad(m) {
   $('load').innerHTML = `<div class="loadw"><table class="load"><tr><th>周起</th>${head}</tr>${rows}</table></div><div class="empty" style="font-size:12px;margin-top:6px">每周展示每日并行任务峰值；≥3 标红。</div>${suggestions ? `<ul class="load-suggestions">${suggestions}</ul>` : '<div class="empty">暂无资源冲突建议</div>'}`;
 }
 
-$('tmExit')?.addEventListener('click', exitTimeMachine);
-$('tmBannerExit')?.addEventListener('click', exitTimeMachine);
+$('tmExit')?.addEventListener('click', () => exitTimeMachine(true));
+$('tmBannerExit')?.addEventListener('click', () => exitTimeMachine(true));
 $('tmPlayPause')?.addEventListener('click', togglePlay);
 $('tmSlider')?.addEventListener('input', (e) => {
   stopPlay();

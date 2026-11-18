@@ -176,6 +176,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .ghost-toggle{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--t);cursor:pointer;user-select:none}
 .gctrl button.on{background:var(--acc);color:#fff}
 .time-machine-bar{background:#f8fafc;border:1px solid var(--b);border-radius:8px;padding:8px 12px;margin:8px 0;display:grid;gap:6px}
+.time-machine-bar[hidden],.tm-banner[hidden]{display:none}
 .tm-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .tm-slider-wrap{flex:1;min-width:160px;display:flex;align-items:center}
 .tm-slider-wrap input[type=range]{width:100%;cursor:pointer}
