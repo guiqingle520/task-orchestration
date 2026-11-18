@@ -87,7 +87,11 @@ export function serializePlanMarkdown(data, rawMarkdown, changelogEntry = null) 
   return serialized + body;
 }
 
-const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+const isDate = (s) => {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const date = new Date(s);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === s;
+};
 const STATUS = ['todo', 'doing', 'done', 'blocked'];
 
 export function validate(data) {

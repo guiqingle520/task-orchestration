@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown } from '../web/analysis.js';
+import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown, computeTimelineDiff } from '../web/analysis.js';
 
 test('snapshot comparison identifies additions, removals, schedule and progress changes', () => {
   const before = { tasks: [{ id: 'A', title: 'A', start: '2026-01-01', end: '2026-01-02', progress: 0, deps: [] }, { id: 'B', title: 'B' }] };
@@ -9,6 +9,37 @@ test('snapshot comparison identifies additions, removals, schedule and progress 
   assert.deepEqual(result.map((x) => [x.id, x.type]), [['A', 'changed'], ['B', 'removed'], ['C', 'added']]);
   assert.deepEqual(result[0].differences.map((x) => x.field), ['end', 'progress', 'deps']);
   assert.deepEqual(comparePlans(before, before), []);
+});
+
+test('timeline diff keeps signed schedule deltas and uses null for the missing side', () => {
+  const task = (id, start, end, progress) => ({ id, start, end, progress });
+  const baseline = { project: 'Baseline', tasks: [
+    task('T-1', '2026-01-03', '2026-01-06', 25), task('T-2', '2026-01-07', '2026-01-08', 0),
+    task('T-3', '2026-01-02', '2026-01-02', 70), task('T-4', '2026-01-02', '2026-01-03', 0),
+  ] };
+  const current = { project: 'Current', tasks: [
+    task('T-1', '2026-01-05', '2026-01-07', 50), task('T-3', '2026-01-01', '2026-01-01', 60),
+    task('T-4', '2026-01-02', '2026-01-03', 10), task('T-5', '2026-01-02', '2026-01-02', 0),
+  ] };
+  const before = structuredClone([baseline, current]);
+  const diff = computeTimelineDiff(baseline, current);
+  assert.equal(diff.baselineProject, 'Baseline');
+  assert.equal(diff.currentProject, 'Current');
+  assert.deepEqual(diff.summary, { addedCount: 1, removedCount: 1, shiftedCount: 2, totalSlipDays: 0 });
+  assert.deepEqual(diff.tasks['T-1'], {
+    status: 'common', baselineStart: '2026-01-03', baselineEnd: '2026-01-06', currentStart: '2026-01-05', currentEnd: '2026-01-07',
+    startShiftDays: 2, endShiftDays: 1, durationDelta: -1, progressDelta: 25,
+  });
+  assert.equal(diff.tasks['T-3'].endShiftDays, -1);
+  assert.equal(diff.tasks['T-3'].progressDelta, -10);
+  assert.equal(diff.tasks['T-4'].startShiftDays, 0);
+  assert.equal(diff.tasks['T-5'].status, 'added');
+  assert.equal(diff.tasks['T-5'].baselineStart, null);
+  assert.equal(diff.tasks['T-5'].progressDelta, null);
+  assert.equal(diff.tasks['T-2'].status, 'removed');
+  assert.equal(diff.tasks['T-2'].currentEnd, null);
+  assert.equal(diff.tasks['T-2'].durationDelta, null);
+  assert.deepEqual([baseline, current], before);
 });
 
 test('load uses daily overlap and proposes a capacity-safe shift', () => {

@@ -4,7 +4,7 @@ import { mkdtemp, cp, mkdir, readFile, writeFile, rename, rm } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
 test('plan changes and atomic replacements reach SSE clients and reconnects', { timeout: 15000 }, async (t) => {
@@ -76,6 +76,16 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   const payload = { ...loaded.data, expectedRevision: loaded.revision, reason: '' };
   payload.tasks[0].title += ' 修改';
   const save = (body) => fetch(`${base}/api/plan/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const rawBeforeConflict = await readFile(file, 'utf8');
+  const conflicting = structuredClone(payload);
+  conflicting.reason = '尝试提前依赖任务';
+  conflicting.tasks.find(({ id }) => id === 'T-2').start = '2026-11-16';
+  const rejected = await save(conflicting);
+  assert.equal(rejected.status, 400);
+  const body = await rejected.json();
+  assert.equal(body.code, 'DEPENDENCY_CONFLICT');
+  assert.deepEqual(body.conflicts, [{ upstreamId: 'T-1', downstreamId: 'T-2', upstreamEnd: '2026-11-17', downstreamStart: '2026-11-16', overlapDays: 1 }]);
+  assert.equal(await readFile(file, 'utf8'), rawBeforeConflict);
   assert.equal((await save(payload)).status, 400);
   payload.reason = '调整任务标题';
   const saved = await save(payload);
@@ -90,6 +100,13 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   await cp(join(root, 'plan'), join(secondRoot, 'plan'), { recursive: true });
   const secondFile = join(secondRoot, 'plan', 'plan.md');
   await writeFile(secondFile, original.replace('project: task-orchestration', 'project: second').replace(/^(  - id: )(T-\d+)/m, '$1"$2" # keep the ID comment'));
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=History QA', '-c', 'user.email=qa@example.com',
+    '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=.git/no-test-hooks', ...args], { cwd: secondRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init', '-q', '--object-format=sha1');
+  git('add', 'plan/plan.md');
+  const historySubject = 'OFFLINE-COMMIT-FIXTURE ' + current.id;
+  git('commit', '-qm', historySubject);
+  const historyHash = git('rev-parse', 'HEAD');
   const register = await fetch(`${base}/api/projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'second', name: 'Second', repoRoot: secondRoot }) });
   assert.equal(register.status, 200, await register.clone().text());
   assert.equal((await (await fetch(`${base}/api/projects`)).json()).projects.length, 2);
@@ -104,6 +121,69 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   assert.equal((await (await fetch(`${base}/api/plan?project=second`)).json()).data.tasks[0].progress, 35);
   assert.match(await readFile(secondFile, 'utf8'), /"T-\d+" # keep the ID comment/);
   assert.equal((await (await fetch(`${base}/api/plan`)).json()).data.tasks[0].progress, 20);
+  const liveSecond = await (await fetch(`${base}/api/plan?project=second`)).json();
+  const readHistory = (query) => fetch(`${base}/api/history?${query}`);
+  const listing = await (await readHistory('project=second&limit=2')).json();
+  assert.equal(listing.projectId, 'second');
+  assert.equal(listing.current.revision, liveSecond.revision);
+  assert.deepEqual(listing.commits.map(({ hash, subject, taskCount }) => [hash, subject, taskCount]), [[historyHash, historySubject, secondPlan.data.tasks.length]]);
+  const historical = await (await readHistory(`project=second&rev=${historyHash.slice(0, 7)}`)).json();
+  assert.equal(historical.currentRevision, liveSecond.revision);
+  assert.equal(historical.commit.hash, historyHash);
+  assert.equal(historical.data.tasks[0].progress, secondTask.progress);
+  assert.equal(historical.diff.tasks[secondTask.id].progressDelta, 35 - secondTask.progress);
+  const defaultHistory = await (await readHistory('limit=1')).json();
+  assert.equal(defaultHistory.current.revision, (await (await fetch(`${base}/api/plan`)).json()).revision);
+  assert.deepEqual(defaultHistory.commits, []);
+  assert.equal((await readHistory(`rev=${historyHash}`)).status, 404);
+  assert.equal((await readHistory('project=second&rev=HEAD')).status, 400);
+  assert.equal((await readHistory('project=second&limit=101')).status, 400);
+  assert.equal((await readHistory('project=missing')).status, 404);
+  const postJson = (path, body) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const exportResponse = await postJson('/api/export/html?project=second', {
+    today: '2026-11-18', customTitle: '第二个项目分享版', maskOwners: true, stripInternalNotes: true,
+  });
+  assert.equal(exportResponse.status, 200, await exportResponse.clone().text().then((body) => body.slice(0, 256)));
+  const exported = await exportResponse.json();
+  assert.equal(exported.filename, 'task-orchestration-2026-11-18.html');
+  assert.match(exported.html, /<title>第二个项目分享版<\/title>/);
+  assert.match(exported.html, /成员-A/);
+  assert.equal(/ownerMap|规划者按用户要求|OFFLINE-COMMIT-FIXTURE/.test(exported.html), false, 'do not embed private export metadata');
+  const withoutMask = await postJson('/api/export/html?project=second', { today: '2026-11-18' });
+  assert.ok((await withoutMask.json()).html.includes(historySubject));
+  assert.equal((await postJson('/api/export/html?project=second', { today: '2026-04-31' })).status, 400);
+
+  const capacity = async (id) => (await fetch(base + '/api/capacity?project=' + id)).json();
+  assert.equal((await capacity('second')).config.hoursPerDay, 8);
+  const updateHours = (body) => postJson('/api/capacity?project=second', body);
+  const keepPlan = await readFile(secondFile, 'utf8');
+  const savedHours = await updateHours({ hoursPerDay: 7.5, tasks: { [secondTask.id]: { estimateHours: 0, actualHours: 0, storyPoints: 0 } } });
+  assert.equal(savedHours.status, 200);
+  assert.deepEqual((await capacity('second')).config.tasks[secondTask.id], { estimateHours: 0, actualHours: 0, storyPoints: 0 });
+  assert.equal((await capacity('second')).metrics.tasks[secondTask.id].actualSource, 'reported');
+  assert.equal((await updateHours({ holidays: ['2026-12-32'] })).status, 400);
+  assert.equal((await capacity('second')).config.hoursPerDay, 7.5);
+  assert.equal(await readFile(secondFile, 'utf8'), keepPlan);
+
+  const alternateFile = join(secondRoot, 'plan', 'alternate.md');
+  await writeFile(alternateFile, keepPlan);
+  const alternate = await postJson('/api/projects', { id: 'alternate', name: 'Alternate', repoRoot: secondRoot, planPath: alternateFile });
+  assert.equal(alternate.status, 200);
+  assert.equal((await capacity('alternate')).config.hoursPerDay, 8);
+  assert.equal((await postJson('/api/capacity?project=alternate', { hoursPerDay: 6 })).status, 200);
+  assert.equal((await capacity('alternate')).config.hoursPerDay, 6);
+  assert.equal((await capacity('second')).config.hoursPerDay, 7.5);
+  assert.equal((await capacity('default')).config.hoursPerDay, 8);
+  const integrationPath = '/api/integrations?project=second';
+  const savedIntegration = await postJson(integrationPath, { provider: 'github', enabled: true, repo: 'fixture/project', token: 'M5-TEST-TOKEN' });
+  assert.equal(savedIntegration.status, 200);
+  const integration = await (await fetch(base + integrationPath)).json();
+  assert.equal(integration.token, '');
+  assert.equal(integration.tokenConfigured, true);
+  assert.equal(JSON.stringify(integration).includes('M5-TEST-TOKEN'), false);
+  assert.equal((await (await fetch(base + '/api/integrations?project=alternate')).json()).tokenConfigured, false);
+  assert.equal((await postJson('/api/integrations/sync?project=second', { direction: 'push', taskIds: [] })).status, 400);
+  assert.equal((await postJson('/api/integrations/sync?project=second', { direction: 'pull', taskIds: [current.id] })).status, 400);
   await delay(250);
   const firstController = new AbortController(), secondController = new AbortController();
   t.after(() => { firstController.abort(); secondController.abort(); });
@@ -124,6 +204,12 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   assert.deepEqual(channels[0].projects, ['default']);
   assert.equal(JSON.stringify(channels).includes('secret'), false);
   assert.equal((await fetch(`${base}/api/notify?project=second`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channelId: 'test', mode: 'report' }) })).status, 400);
+  await writeFile(secondFile, '---\nproject: broken\nbad syntax\n---\n');
+  assert.equal((await (await readHistory('project=second')).json()).current, null);
+  const withoutCurrent = await (await readHistory(`project=second&rev=${historyHash}`)).json();
+  assert.equal(withoutCurrent.currentRevision, null);
+  assert.equal(withoutCurrent.diff, null);
+  assert.equal(withoutCurrent.data.tasks.length, secondPlan.data.tasks.length);
 });
 
 test('browser refreshes the plan on SSE events', async (t) => {

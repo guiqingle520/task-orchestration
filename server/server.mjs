@@ -6,11 +6,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
-import { getTaskCommitsMap, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
+import { getTaskCommitsMap, parseCommitMessage, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { createWorkspaces } from './workspaces.mjs';
 import { createWebhookService } from './webhooks.mjs';
-import { compute } from '../web/metrics.js';
-import { buildReport } from '../web/analysis.js';
+import { getPlanAtCommit, HistoryError, listPlanHistory, summarizePlanFrame } from './history.mjs';
+import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
+import { CapacityConfigError, normalizeCapacityConfig, readCapacityConfig, writeCapacityConfig } from './capacity.mjs';
+import { createIntegrationService, IntegrationError } from './integrations.mjs';
+import { compute, findNewDependencyConflicts } from '../web/metrics.js';
+import { buildReport, computeCapacityMetrics, computeTimelineDiff } from '../web/analysis.js';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
 const webDir = join(root, 'web');
@@ -19,6 +23,15 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const clients = new Map();
 const workspaces = createWorkspaces(root);
 const webhooks = createWebhookService(root);
+const integrations = createIntegrationService(root, {
+  today: dashboardToday,
+  readPlan(project) {
+    let current;
+    try { current = workspaces.get(project.id); } catch { return null; }
+    if (current.planPath !== project.planPath || current.repoRoot !== project.repoRoot) return null;
+    return readPlanSnapshot(current, { includeRaw: true });
+  },
+});
 const revisionOf = (text) => createHash('sha256').update(text).digest('hex');
 const watchers = new Map();
 
@@ -44,17 +57,22 @@ function watchProject(project) {
 }
 for (const project of workspaces.read().projects) watchProject(project);
 
-function loadPlan(project) {
+function readPlanSnapshot(project, { includeRaw = false } = {}) {
   const planFile = project.planPath;
   if (!existsSync(planFile)) return { error: ['找不到 plan/plan.md'] };
   try {
     const raw = readFileSync(planFile, 'utf8');
     const data = parseFrontMatter(raw);
     if (!data) return { error: ['plan.md 缺少 YAML front matter'] };
-    return { data, revision: revisionOf(raw), commits: getTaskCommitsMap(project.repoRoot) };
+    return { data, revision: revisionOf(raw), ...(includeRaw ? { raw } : {}) };
   } catch (e) {
     return { error: [e.message] };
   }
+}
+
+function loadPlan(project) {
+  const snapshot = readPlanSnapshot(project);
+  return snapshot.data ? { ...snapshot, commits: getTaskCommitsMap(project.repoRoot) } : snapshot;
 }
 
 function syncFromGit(project) {
@@ -84,6 +102,108 @@ function syncFromGit(project) {
 function json(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
+}
+
+function dashboardToday() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function withJsonBody(req, res, limit, handle) {
+  if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return json(res, 415, { message: '请求格式错误' });
+  let size = 0;
+  const chunks = [];
+  req.on('data', (chunk) => {
+    if (size > limit) return;
+    size += chunk.length;
+    if (size > limit) { chunks.length = 0; json(res, 413, { message: '请求内容过大' }); }
+    else chunks.push(chunk);
+  });
+  req.on('end', () => {
+    if (size > limit) return;
+    let input;
+    try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch { return json(res, 400, { message: 'JSON 请求内容无效' }); }
+    handle(input);
+  });
+}
+
+async function exportPlanHtml(res, project, input) {
+  try {
+    const exportedOn = dashboardToday();
+    const options = normalizeExportOptions(input, exportedOn);
+    const { data } = readPlanSnapshot(project);
+    if (!data || validate(data).length) return json(res, 400, { message: '当前计划无效，无法导出' });
+    let commits;
+    if (!options.maskOwners && !options.stripInternalNotes) {
+      const history = await listPlanHistory(project).catch(() => []);
+      commits = {};
+      for (const { shortHash: hash, date, subject } of history) {
+        for (const id of parseCommitMessage(subject).keys()) (commits[id] ??= []).push({ hash, date, subject });
+      }
+    }
+    const html = buildStandaloneHtml({ plan: data, today: options.today, exportedOn, commits }, options);
+    return json(res, 200, { ok: true, filename: 'task-orchestration-' + options.today + '.html', html });
+  } catch (err) {
+    return err instanceof ExportInputError ? json(res, 400, { message: err.message })
+      : json(res, 500, { message: '无法生成离线驾驶舱' });
+  }
+}
+
+function serveCapacity(res, project, input) {
+  const saving = input !== undefined;
+  try {
+    const { data } = readPlanSnapshot(project);
+    if (!data || validate(data).length) return json(res, 400, { message: '当前计划无效，无法核算工时' });
+    const config = saving ? normalizeCapacityConfig(input) : readCapacityConfig(project);
+    const metrics = computeCapacityMetrics(data, config, dashboardToday());
+    if (saving) writeCapacityConfig(project, config);
+    return json(res, 200, { ...(saving ? { ok: true } : {}), projectId: project.id, config, metrics });
+  } catch (err) {
+    if (saving && err instanceof CapacityConfigError) return json(res, 400, { message: err.message });
+    return json(res, 500, { message: saving ? '无法保存工时配置' : '无法读取工时配置' });
+  }
+}
+
+async function serveIntegrations(res, project, action, input) {
+  try {
+    const result = action === 'sync' ? await integrations.synchronize(project, input)
+      : action === 'save' ? integrations.save(project.id, input) : integrations.get(project.id);
+    return json(res, 200, action === 'save' ? { ok: true, ...result } : result);
+  } catch (err) {
+    if (err instanceof IntegrationError) return json(res, err.status, { message: err.message, code: err.code });
+    return json(res, 500, { message: '无法读取或保存平台集成配置' });
+  }
+}
+
+async function serveHistory(res, project, params) {
+  try {
+    const rev = params.get('rev');
+    const limit = params.get('limit');
+    const historical = rev === null ? null : await getPlanAtCommit(project, rev);
+    const commits = historical ? null : await listPlanHistory(project, limit === null ? undefined : /^\d+$/.test(limit) ? Number(limit) : NaN);
+    // Git 读取期间工作树可能更新。版本与 diff 始终使用同一次当前计划读取。
+    let currentProject;
+    try { currentProject = workspaces.get(project.id); }
+    catch { return json(res, 409, { message: '项目路径已变化，请重新加载历史' }); }
+    if (currentProject.repoRoot !== project.repoRoot || currentProject.planPath !== project.planPath) {
+      return json(res, 409, { message: '项目路径已变化，请重新加载历史' });
+    }
+    const snapshot = readPlanSnapshot(currentProject);
+    const current = snapshot.data && !validate(snapshot.data).length ? snapshot : null;
+    if (historical) return json(res, 200, {
+      projectId: project.id, ...historical, currentRevision: current?.revision ?? null,
+      diff: current ? computeTimelineDiff(historical.data, current.data) : null,
+    });
+    const today = dashboardToday();
+    return json(res, 200, {
+      projectId: project.id, commits,
+      current: current ? { revision: current.revision, ...summarizePlanFrame(current.data, today) } : null,
+    });
+  } catch (err) {
+    return err instanceof HistoryError ? json(res, err.status, { message: err.message })
+      : json(res, 500, { message: '无法读取 Git 历史计划' });
+  }
 }
 
 function notificationEvent(project, mode) {
@@ -133,6 +253,11 @@ function savePlan(body, project) {
   const next = { project: body.project, milestones: body.milestones, tasks: body.tasks };
   const errors = validate(next);
   if (errors.length) return { errors, message: errors.join('; ') };
+  const conflicts = findNewDependencyConflicts(before, next);
+  if (conflicts.length) {
+    const { upstreamId, downstreamId, upstreamEnd, downstreamStart } = conflicts[0];
+    return { code: 'DEPENDENCY_CONFLICT', message: `${downstreamId} 开始于 ${downstreamStart}，早于前置任务 ${upstreamId} 的结束日 ${upstreamEnd}`, conflicts };
+  }
   const structure = (data) => ({ project: data.project, milestones: data.milestones, tasks: data.tasks.map(({ id, title, owner, milestone, start, end, deps }) => ({ id, title, owner, milestone, start, end, deps })) });
   const changed = JSON.stringify(structure(before)) !== JSON.stringify(structure(next));
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
@@ -179,6 +304,23 @@ createServer((req, res) => {
   if (url.pathname.startsWith('/api/') && url.pathname !== '/api/webhooks') {
     try { project = workspaces.get(url.searchParams.get('project')); }
     catch (err) { return json(res, 404, { message: err.message }); }
+  }
+  if (url.pathname === '/api/history' && req.method === 'GET') {
+    return void serveHistory(res, project, url.searchParams);
+  }
+  if (url.pathname === '/api/export/html' && req.method === 'POST') {
+    return withJsonBody(req, res, 16 * 1024, (input) => { void exportPlanHtml(res, project, input); });
+  }
+  if (url.pathname === '/api/capacity') {
+    if (req.method === 'GET') return serveCapacity(res, project);
+    if (req.method === 'POST') return withJsonBody(req, res, 256 * 1024, (input) => serveCapacity(res, project, input));
+  }
+  if (url.pathname === '/api/integrations') {
+    if (req.method === 'GET') return void serveIntegrations(res, project, 'get');
+    if (req.method === 'POST') return withJsonBody(req, res, 16 * 1024, (input) => { void serveIntegrations(res, project, 'save', input); });
+  }
+  if (url.pathname === '/api/integrations/sync' && req.method === 'POST') {
+    return withJsonBody(req, res, 64 * 1024, (input) => { void serveIntegrations(res, project, 'sync', input); });
   }
   if (url.pathname === '/api/webhooks' && req.method === 'GET') {
     try { return json(res, 200, { channels: webhooks.list() }); }
@@ -249,7 +391,7 @@ createServer((req, res) => {
     req.on('end', () => {
       try {
         const result = savePlan(JSON.parse(body), project);
-        json(res, result.conflict ? 409 : result.errors ? 400 : 200, result);
+        json(res, result.conflict ? 409 : result.errors || result.code === 'DEPENDENCY_CONFLICT' ? 400 : 200, result);
       } catch (err) { json(res, 400, { message: err.message }); }
     });
     return;

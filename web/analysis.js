@@ -55,6 +55,35 @@ export function comparePlans(before, after) {
   return changes;
 }
 
+// 回放差异按任务 ID 连接两帧。负值表示提前或进度回退，缺失一侧用 null。
+export function computeTimelineDiff(baselinePlan, currentPlan) {
+  const baseline = new Map(baselinePlan.tasks.map((task) => [task.id, task]));
+  const current = new Map(currentPlan.tasks.map((task) => [task.id, task]));
+  const summary = { addedCount: 0, removedCount: 0, shiftedCount: 0, totalSlipDays: 0 };
+  const entries = [];
+  for (const id of new Set([...baseline.keys(), ...current.keys()])) {
+    const before = baseline.get(id), after = current.get(id);
+    const status = !before ? 'added' : !after ? 'removed' : 'common';
+    const startShiftDays = status === 'common' ? toDay(after.start) - toDay(before.start) : null;
+    const endShiftDays = status === 'common' ? toDay(after.end) - toDay(before.end) : null;
+    if (status === 'added') summary.addedCount++;
+    else if (status === 'removed') summary.removedCount++;
+    else {
+      if (startShiftDays || endShiftDays) summary.shiftedCount++;
+      summary.totalSlipDays += endShiftDays;
+    }
+    entries.push([id, {
+      status,
+      baselineStart: before?.start ?? null, baselineEnd: before?.end ?? null,
+      currentStart: after?.start ?? null, currentEnd: after?.end ?? null,
+      startShiftDays, endShiftDays,
+      durationDelta: status === 'common' ? endShiftDays - startShiftDays : null,
+      progressDelta: status === 'common' ? after.progress - before.progress : null,
+    }]);
+  }
+  return { baselineProject: baselinePlan.project, currentProject: currentPlan.project, summary, tasks: Object.fromEntries(entries) };
+}
+
 // 热力图按周取每日并行任务的峰值；建议是单任务顺延试算，不自动改计划。
 export function analyzeLoad(plan, capacity = 2) {
   const unfinished = plan.tasks.filter((task) => task.status !== 'done');
@@ -97,6 +126,133 @@ export function analyzeLoad(plan, capacity = 2) {
     if (found) suggestions.push({ owner, id: candidate.id, start: fromDay(start), end: fromDay(start + duration - 1), conflictDay: conflict.day });
   }
   return { weeks, load, conflicts, suggestions };
+}
+
+// 只投影公开快照所需要的字段；不会把侧车配置或计划正文带入分享包。
+export function sanitizePlanForShare(plan, options = {}) {
+  const owners = new Map();
+  const label = (index) => {
+    let suffix = '';
+    for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) {
+      suffix = String.fromCharCode(65 + (n - 1) % 26) + suffix;
+    }
+    return '成员-' + suffix;
+  };
+  const publicTitle = (title) => options.stripInternalNotes
+    ? String(title).replace(/\s*(?:\[内部[:：][^\]]*\]|【内部[:：][^】]*】|<!--[\s\S]*?-->)\s*/g, ' ').trim()
+    : title;
+  const tasks = plan.tasks.map(({ id, title, owner, milestone, start, end, deps, status, progress, actualStart, actualEnd }) => {
+    if (options.maskOwners && !owners.has(owner)) owners.set(owner, label(owners.size));
+    return {
+      id, title: publicTitle(title), owner: options.maskOwners ? owners.get(owner) : owner,
+      milestone, start, end, deps: [...deps], status, progress, actualStart: actualStart ?? null, actualEnd: actualEnd ?? null,
+    };
+  });
+  return {
+    plan: {
+      project: options.customTitle?.trim() || plan.project,
+      milestones: plan.milestones.map(({ id, name, due }) => ({ id, name, due })),
+      tasks,
+    },
+    ownerMap: Object.fromEntries(owners),
+  };
+}
+
+const calendarDay = (date) => {
+  const day = toDay(date);
+  if (typeof date !== 'string' || !Number.isFinite(day) || fromDay(day) !== date) throw new Error('无效日历日期');
+  return day;
+};
+const weekday = (day) => ((day + 4) % 7 + 7) % 7;
+const isWeekend = (day) => weekday(day) === 0 || weekday(day) === 6;
+
+function workingDayCounter(config) {
+  const holidays = new Set((config.holidays ?? []).map(calendarDay));
+  const workdays = new Set((config.workdays ?? []).map(calendarDay));
+  const excludeWeekends = config.excludeWeekends !== false;
+  return (start, end) => {
+    if (end < start) return 0;
+    const span = end - start + 1;
+    const fullWeeks = Math.floor(span / 7);
+    let count = excludeWeekends ? fullWeeks * 5 : span;
+    if (excludeWeekends) {
+      for (let day = start + fullWeeks * 7; day <= end; day++) if (!isWeekend(day)) count++;
+      for (const day of workdays) if (day >= start && day <= end && isWeekend(day) && !holidays.has(day)) count++;
+    }
+    for (const day of holidays) if (day >= start && day <= end && (!excludeWeekends || !isWeekend(day))) count--;
+    return count;
+  };
+}
+
+export function countWorkingDays(startStr, endStr, calendarConfig = {}) {
+  return workingDayCounter(calendarConfig)(calendarDay(startStr), calendarDay(endStr));
+}
+
+export function computeCapacityMetrics(plan, capacityConfig = {}, todayStr) {
+  const countDays = workingDayCounter(capacityConfig);
+  const today = calendarDay(todayStr);
+  const hoursPerDay = capacityConfig.hoursPerDay ?? 8;
+  const calendarWarnings = [];
+  const owners = new Map();
+  const empty = () => ({
+    taskCount: 0, doneCount: 0, storyPoints: 0, completedStoryPoints: 0, estimateHours: 0,
+    reportedActualHours: 0, inferredActualHours: 0, sampledDoneCount: 0, accuracyTotal: 0,
+    sampleEstimate: 0, sampleActual: 0,
+  });
+  const team = empty();
+  const round = (value, digits) => Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
+  const totalsFor = (group, item, done, sampled) => {
+    group.taskCount++;
+    group.storyPoints += item.storyPoints;
+    group.estimateHours += item.estimateHours;
+    if (done) { group.doneCount++; group.completedStoryPoints += item.storyPoints; }
+    if (item.actualSource === 'reported') group.reportedActualHours += item.actualHours;
+    if (item.actualSource === 'inferred') group.inferredActualHours += item.actualHours;
+    if (sampled) {
+      group.sampledDoneCount++;
+      group.accuracyTotal += item.accuracyPct;
+      group.sampleEstimate += item.estimateHours;
+      group.sampleActual += item.actualHours;
+    }
+  };
+  const tasks = Object.fromEntries(plan.tasks.map((task) => {
+    const config = capacityConfig.tasks?.[task.id] ?? {};
+    const start = calendarDay(task.start), end = calendarDay(task.end);
+    const workingDays = countDays(start, end);
+    if (!workingDays) calendarWarnings.push({ id: task.id, message: '计划排期完全处于周末或节假日(有效工作日为 0)' });
+    const done = task.status === 'done';
+    const defaultEstimateHours = Math.max(1, workingDays) * hoursPerDay;
+    const estimateHours = config.estimateHours ?? defaultEstimateHours;
+    const actualWorkingDays = task.actualStart
+      ? countDays(calendarDay(task.actualStart), task.actualEnd ? calendarDay(task.actualEnd) : today) : null;
+    const actualSource = config.actualHours != null ? 'reported' : done ? 'inferred' : 'none';
+    const actualHours = config.actualHours ?? (done ? Math.max(1, actualWorkingDays ?? 1) * hoursPerDay : null);
+    const sampled = done && actualSource === 'reported' && estimateHours > 0;
+    const result = {
+      calendarDays: end - start + 1, workingDays, defaultEstimateHours, actualWorkingDays,
+      storyPoints: config.storyPoints ?? Math.max(1, workingDays), estimateHours,
+      estimateSource: config.estimateHours != null ? 'reported' : 'inferred', actualHours, actualSource,
+      inflationRatio: sampled ? round(actualHours / estimateHours, 2) : null,
+      accuracyPct: sampled ? round(Math.max(0, 1 - Math.abs(actualHours - estimateHours) / estimateHours) * 100, 1) : null,
+    };
+    if (!owners.has(task.owner)) owners.set(task.owner, empty());
+    totalsFor(team, result, done, sampled);
+    totalsFor(owners.get(task.owner), result, done, sampled);
+    return [task.id, result];
+  }));
+  const summarize = ({ accuracyTotal, sampleEstimate, sampleActual, ...group }) => ({
+    ...group,
+    accuracyPct: group.sampledDoneCount ? round(accuracyTotal / group.sampledDoneCount, 1) : null,
+    inflationRatio: group.sampledDoneCount ? round(sampleActual / sampleEstimate, 2) : null,
+  });
+  const summary = summarize(team);
+  return {
+    hoursPerDay, totalStoryPoints: summary.storyPoints, completedStoryPoints: summary.completedStoryPoints,
+    totalEstimateHours: summary.estimateHours, reportedActualHours: summary.reportedActualHours,
+    inferredActualHours: summary.inferredActualHours, sampledDoneCount: summary.sampledDoneCount,
+    overallAccuracyPct: summary.accuracyPct, overallInflationRatio: summary.inflationRatio,
+    calendarWarnings, byOwner: [...owners].map(([owner, totals]) => ({ owner, ...summarize(totals) })), tasks,
+  };
 }
 
 const markdownCell = (value) => String(value ?? '—').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');

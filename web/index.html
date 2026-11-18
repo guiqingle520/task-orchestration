@@ -24,16 +24,37 @@
   </div>
 </header>
 <div id="errors" class="errors" hidden></div>
+<div id="tmBanner" class="tm-banner" hidden>
+  <span>⏪ 正在以历史只读模式回放 Git 计划切片：<strong id="tmBannerCommit"></strong></span>
+  <button type="button" id="tmBannerExit" class="btn-sm">退出回放</button>
+</div>
 <section id="kpis" class="kpis"></section>
 <main>
   <section class="card gantt-card">
     <h2>时间线<small>计划 vs 实际</small></h2>
     <div class="legend">
       <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际(深色=完成度)</span>
+      <span><i class="sw ghost"></i>基线幽灵条</span>
       <span><i class="sw slip"></i>预计延期</span><span><i class="sw crit">★</i>关键路径</span>
       <span><i class="sw ms"></i>里程碑</span><span><i class="sw today"></i>今天</span>
     </div>
     <div id="gctrl" class="gctrl"></div>
+    <div id="timeMachineBar" class="time-machine-bar" hidden>
+      <div class="tm-row">
+        <button type="button" id="tmPlayPause" class="btn-sm">▶ 播放</button>
+        <label class="tm-slider-wrap">
+          <input type="range" id="tmSlider" min="0" max="0" value="0" aria-label="历史提交时间轴">
+        </label>
+        <select id="tmSpeed" class="btn-sm" aria-label="播放倍速">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+        </select>
+        <button type="button" id="tmExit" class="btn-sm">退出回放</button>
+      </div>
+      <div id="tmFrameInfo" class="tm-frame-info"></div>
+    </div>
+    <div id="planGestureMessage" class="plan-gesture-message" role="status"></div>
+    <div id="planDragTip" class="plan-drag-tip" hidden></div>
     <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><label>任务 <select id="simTask"></select></label><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
     <div id="simResult" class="sim-result" aria-live="polite"></div>
     <div id="gantt"></div>
@@ -53,6 +74,7 @@
       <div class="snapshot-controls">
         <button id="exportMarkdown">导出 Markdown</button>
         <button id="exportSvg">导出 SVG</button>
+        <button type="button" id="exportHtmlBtn">导出离线网页</button>
         <button id="copySummary">复制摘要</button>
         <button type="button" id="pushReportBtn">推送周报</button>
       </div>
@@ -72,6 +94,14 @@
       <ul id="risks" class="risks"></ul>
     </section>
     <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
+    <section class="card" id="capacityCard">
+      <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
+      <div id="capacityMetrics" aria-live="polite"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>平台集成</h2><div class="snapshot-controls"><button type="button" id="configIntegrationBtn">配置平台</button><button type="button" id="issueSyncBtn">Issue 同步</button></div></div>
+      <div class="empty" id="issueStatus" role="status"></div>
+    </section>
   </aside>
 </main>
 
@@ -79,6 +109,7 @@
   <form id="taskForm">
     <h2 id="taskTitle">任务详情</h2>
     <p id="taskMeta"></p>
+    <div id="taskIssue"></div>
     <div id="plannerFields" class="planner-fields" hidden>
       <label>任务编号 <input id="planTaskId" type="text" readonly></label>
       <label>任务标题 <input id="planTaskTitle" type="text" maxlength="120"></label>
@@ -101,6 +132,22 @@
       <button type="button" id="validatePlan">校验计划</button>
       <button type="button" id="closeTask">取消</button>
       <button type="submit">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="planEditDialog" class="task-dialog" aria-labelledby="planEditTitle">
+  <form id="planEditForm">
+    <h2 id="planEditTitle">确认排期变更</h2>
+    <label id="planEditDateRow" hidden><span id="planEditDateLabel"></span><input id="planGestureDate" type="date"></label>
+    <ul id="planEditChanges" class="plan-edit-list" aria-label="日期变更"></ul>
+    <ul id="planEditConflicts" class="plan-edit-list plan-conflicts" aria-label="排期冲突"></ul>
+    <label id="planCascadeRow" hidden><input id="planCascade" type="checkbox"> 同时顺延受影响的任务</label>
+    <label>变更原因 <input id="planEditReason" type="text" required minlength="2"></label>
+    <p id="planEditMessage" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closePlanEdit">取消</button>
+      <button type="submit" id="savePlanEdit">保存变更</button>
     </div>
   </form>
 </dialog>
@@ -146,6 +193,66 @@
       <button type="submit">保存配置</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="exportHtmlDialog" class="task-dialog" aria-labelledby="exportHtmlTitle">
+  <form id="exportHtmlForm">
+    <h2 id="exportHtmlTitle">导出离线网页</h2>
+    <p class="empty" id="exportHtmlSummary"></p>
+    <label>导出标题 <input id="exportCustomTitle" type="text" maxlength="160"></label>
+    <label><input id="exportMaskOwners" type="checkbox" checked> 匿名化负责人</label>
+    <label><input id="exportStripNotes" type="checkbox" checked> 排除 Git 提交和标记的内部备注</label>
+    <p class="empty">任一脱敏选项都会排除 Git 提交。普通括号内容会保留，分享前请检查项目、任务和里程碑标题。</p>
+    <p id="exportHtmlStatus" role="status"></p>
+    <div class="dialog-actions"><button type="button" data-close-m5="exportHtmlDialog">取消</button><button type="submit" id="exportHtmlSubmit">生成并下载 HTML</button></div>
+  </form>
+</dialog>
+
+<dialog id="capacityDialog" class="task-dialog m5-wide" aria-labelledby="capacityTitle">
+  <form id="capacityForm">
+    <h2 id="capacityTitle">工作日历与工时</h2>
+    <div class="field-row">
+      <label>每日标准工时 <input id="capacityHours" type="number" min="1" max="24" step="any" required></label>
+      <label><input id="capacityWeekends" type="checkbox"> 自动排除周末</label>
+    </div>
+    <div class="field-row">
+      <label>节假日<textarea id="capacityHolidays" rows="2" placeholder="YYYY-MM-DD，每行一个"></textarea></label>
+      <label>调休补班日<textarea id="capacityWorkdays" rows="2" placeholder="YYYY-MM-DD，每行一个"></textarea></label>
+    </div>
+    <p class="empty">节假日优先于补班日。工时或故事点填写 0 会保留，留空才使用默认值或推算。</p>
+    <div class="m5-table-scroll"><table class="load"><thead><tr><th>任务</th><th>故事点</th><th>预估工时</th><th>实际工时</th></tr></thead><tbody id="capacityTaskRows"></tbody></table></div>
+    <p id="capacityDialogStatus" role="status"></p>
+    <div class="dialog-actions"><button type="button" data-close-m5="capacityDialog">取消</button><button type="submit" id="capacitySave">保存配置</button></div>
+  </form>
+</dialog>
+
+<dialog id="integrationDialog" class="task-dialog m5-wide" aria-labelledby="integrationTitle">
+  <h2 id="integrationTitle">GitHub / GitLab Issue 同步</h2>
+  <details id="integrationSettings">
+    <summary>平台配置</summary>
+    <form id="integrationForm">
+      <div class="field-row">
+        <label>平台 <select id="integrationProvider"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
+        <label>仓库 <input id="integrationRepo" type="text" maxlength="255" placeholder="owner/repo 或 GitLab 项目 ID"></label>
+      </div>
+      <label>API 地址 <input id="integrationBase" type="url" placeholder="https://api.github.com"></label>
+      <label>访问 Token <input id="integrationToken" type="password" maxlength="4096" autocomplete="off"></label>
+      <label><input id="integrationEnabled" type="checkbox"> 启用此项目的集成</label>
+      <p class="empty">切换仓库或 API 地址会清除旧绑定，启用新目标请重新填写 Token。</p>
+      <button type="submit" id="integrationConfigSave">保存平台配置</button>
+    </form>
+  </details>
+  <label>任务范围 <select id="integrationTasks" multiple size="6"></select></label>
+  <p class="empty">可选中一项或多项。未选择时，拉取预览会检查全部任务；全量推送需要另行确认。</p>
+  <label><input id="integrationAllowAll" type="checkbox"> 允许全量推送</label>
+  <div class="dialog-actions m5-sync-actions">
+    <button type="button" id="integrationPreview">预览远端拉取</button>
+    <button type="button" id="integrationConfirm" disabled>确认写入</button>
+    <button type="button" id="integrationPush">推送到平台</button>
+  </div>
+  <p id="integrationDialogStatus" role="status"></p>
+  <div id="integrationResults" class="m5-results" aria-live="polite"></div>
+  <div class="dialog-actions"><button type="button" data-close-m5="integrationDialog">关闭</button></div>
 </dialog>
 
 <script type="module" src="app.js"></script>

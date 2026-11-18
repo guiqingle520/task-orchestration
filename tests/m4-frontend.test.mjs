@@ -124,6 +124,37 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
   assert.equal(saveCall.body.expectedRevision, 'rev-1');
   assert.equal(saveCall.body.reason, '补充前端自动化验证任务');
 
+  // 拉伸前置条后需先解决下游冲突，确认仍使用起手时的版本。
+  assert.match(elements.get('gantt').innerHTML, /data-plan-resize="start"/);
+  assert.match(elements.get('gantt').innerHTML, /data-dep-from="T-1"/);
+  assert.match(elements.get('gantt').innerHTML, /data-unlink-from="T-1" data-unlink-to="T-18"/);
+  const timeline = { getBoundingClientRect: () => ({ width: 200 }), querySelectorAll: () => [], querySelector: () => null };
+  const bar = { dataset: { planDrag: 'T-1', days: '20' }, closest: () => timeline };
+  docListeners.pointerdown[0]({
+    pointerId: 1, button: 0, clientX: 40, preventDefault() {},
+    target: { closest: (sel) => sel === '[data-plan-drag]' ? bar
+      : sel === '[data-plan-resize]' ? { dataset: { planResize: 'end' } } : null },
+  });
+  docListeners.pointerup[0]({ pointerId: 1, clientX: 60 });
+  assert.equal(elements.get('planEditDialog').open, true);
+  assert.equal(elements.get('savePlanEdit').disabled, true);
+  assert.match(elements.get('planEditConflicts').innerHTML, /T-18/);
+  const beforeSubmit = calls.length;
+  await elements.get('planEditForm').dispatch('submit');
+  assert.equal(calls.length, beforeSubmit);
+  elements.get('planCascade').checked = true;
+  await elements.get('planCascade').dispatch('change');
+  assert.equal(elements.get('savePlanEdit').disabled, false);
+  assert.match(elements.get('planEditChanges').innerHTML, /T-18.*2026-11-19 ～ 2026-11-21（顺延）/);
+  revision = 'rev-2';
+  await elements.get('today').dispatch('change');
+  await elements.get('planEditForm').dispatch('submit');
+  assert.equal(calls.filter((call) => call.url.startsWith('/api/plan/save')).at(-1).body.expectedRevision, 'rev-1');
+  assert.match(elements.get('planEditMessage').textContent, /重新打开/);
+  await elements.get('closePlanEdit').dispatch('click');
+  revision = 'rev-1';
+  await elements.get('today').dispatch('change');
+
   const click = (selector, target) => docListeners.click[0]({ target: { closest: (sel) => sel === selector ? target : null } });
   await click('[data-id]', { dataset: { id: 'T-18' } });
   await click('[data-edit-task]', {});

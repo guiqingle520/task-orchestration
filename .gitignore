@@ -1,4 +1,5 @@
 plan/webhooks.json
 plan/workspaces.json
-plan/capacity.json
+capacity.json
+*.capacity.json
 plan/integrations.json

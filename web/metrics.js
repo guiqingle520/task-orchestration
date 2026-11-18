@@ -3,6 +3,128 @@ const DAY = 86400000;
 export const toDay = (s) => Math.floor(Date.parse(s + 'T00:00:00Z') / DAY);
 export const fromDay = (n) => new Date(n * DAY).toISOString().slice(0, 10);
 
+function newDependencyConflicts(beforeById, nextById, task) {
+  const previous = beforeById.get(task.id);
+  const previousDeps = new Set(previous?.deps);
+  const start = toDay(task.start);
+  const conflicts = [];
+  for (const upstreamId of task.deps) {
+    const upstream = nextById.get(upstreamId);
+    const overlapDays = toDay(upstream.end) - start;
+    if (overlapDays <= 0) continue;
+    const beforeOverlap = previousDeps.has(upstreamId)
+      ? Math.max(0, toDay(beforeById.get(upstreamId).end) - toDay(previous.start))
+      : 0;
+    if (overlapDays > beforeOverlap) {
+      conflicts.push({ upstreamId, downstreamId: task.id, upstreamEnd: upstream.end, downstreamStart: task.start, overlapDays });
+    }
+  }
+  return conflicts;
+}
+
+// 两份计划都已经通过结构校验。保留未加重的存量倒挂，允许同日交接。
+export function findNewDependencyConflicts(before, next) {
+  const beforeById = new Map(before.tasks.map((task) => [task.id, task]));
+  const nextById = new Map(next.tasks.map((task) => [task.id, task]));
+  return next.tasks.flatMap((task) => newDependencyConflicts(beforeById, nextById, task));
+}
+
+function orderPlanTasks(tasks, byId) {
+  const ordered = [], visited = new Set(), onPath = new Set();
+  for (const root of tasks) {
+    if (visited.has(root.id)) continue;
+    const stack = [{ task: root, index: 0 }];
+    onPath.add(root.id);
+    while (stack.length) {
+      const frame = stack.at(-1), { task } = frame;
+      if (frame.index === task.deps.length) {
+        stack.pop();
+        onPath.delete(task.id);
+        visited.add(task.id);
+        ordered.push(task);
+        continue;
+      }
+      const id = task.deps[frame.index++];
+      if (!byId.has(id)) return { missingId: id };
+      if (onPath.has(id)) return { cyclePath: [...stack.slice(stack.findIndex((item) => item.task.id === id)).map((item) => item.task.id), id] };
+      if (!visited.has(id)) {
+        onPath.add(id);
+        stack.push({ task: byId.get(id), index: 0 });
+      }
+    }
+  }
+  return { ordered };
+}
+
+const minPlanDay = toDay('0000-01-01'), maxPlanDay = toDay('9999-12-31');
+const planDayInRange = (day) => Number.isSafeInteger(day) && day >= minPlanDay && day <= maxPlanDay;
+const validPlanDate = (date) => typeof date === 'string' && planDayInRange(toDay(date)) && fromDay(toDay(date)) === date;
+
+export function previewPlanEdit(plan, operation = {}) {
+  const error = (code, message, extra = {}) => ({
+    valid: false, code, message, cyclePath: [], conflicts: [], cascadedTaskIds: [], suggestedReason: '', nextPlan: null, ...extra,
+  });
+  const dateError = () => error('INVALID_DATE_RANGE', '日期无效或开始日期晚于结束日期');
+  const { type, taskId, fromId, toId, cascade } = operation ?? {};
+  if (!['move', 'resize', 'link', 'unlink'].includes(type)) return error('INVALID_OPERATION', '未知排期操作');
+  const nextPlan = structuredClone(plan);
+  const beforeById = new Map(plan.tasks.map((task) => [task.id, task]));
+  const byId = new Map(nextPlan.tasks.map((task) => [task.id, task]));
+  const changesLink = type === 'link' || type === 'unlink';
+  const target = byId.get(changesLink ? toId : taskId);
+  if (!target || (changesLink && !byId.has(fromId))) return error('UNKNOWN_TASK', '任务不存在');
+  if (nextPlan.tasks.some((task) => !validPlanDate(task.start) || !validPlanDate(task.end) || task.start > task.end)) return dateError();
+  if (type === 'move') {
+    const start = toDay(target.start) + operation.deltaDays, end = toDay(target.end) + operation.deltaDays;
+    if (!Number.isSafeInteger(operation.deltaDays) || !planDayInRange(start) || !planDayInRange(end)) return dateError();
+    target.start = fromDay(start);
+    target.end = fromDay(end);
+  } else if (type === 'resize') {
+    if (!['start', 'end'].includes(operation.edge) || !validPlanDate(operation.targetDate)) return dateError();
+    target[operation.edge] = operation.targetDate;
+    if (target.start > target.end) return dateError();
+  } else if (type === 'link') {
+    if (fromId === toId) return error('SELF_DEPENDENCY', '任务不能依赖自身');
+    if (target.deps.includes(fromId)) return error('DUPLICATE_DEPENDENCY', '依赖关系已存在');
+    target.deps.push(fromId);
+  } else {
+    if (!target.deps.includes(fromId)) return error('UNKNOWN_DEPENDENCY', '依赖关系不存在');
+    target.deps = target.deps.filter((id) => id !== fromId);
+  }
+  const { ordered, cyclePath, missingId } = orderPlanTasks(nextPlan.tasks, byId);
+  if (cyclePath) return error('CYCLE_DETECTED', '存在循环依赖: ' + cyclePath.join(' -> '), { cyclePath });
+  if (missingId) return error('UNKNOWN_TASK', '前置任务不存在: ' + missingId);
+
+  const cascadedTaskIds = [];
+  const targetConflict = !changesLink && newDependencyConflicts(beforeById, byId, target).length > 0;
+  if (cascade === true && type !== 'unlink' && !targetConflict) {
+    const affected = new Set([target.id]);
+    for (const task of ordered) {
+      if (task.deps.some((id) => affected.has(id))) affected.add(task.id);
+      if (!affected.has(task.id) || (!changesLink && task.id === target.id)) continue;
+      const conflicts = newDependencyConflicts(beforeById, byId, task);
+      if (!conflicts.length) continue;
+      const start = Math.max(...conflicts.map(({ upstreamEnd }) => toDay(upstreamEnd)));
+      const end = start + (toDay(task.end) - toDay(task.start));
+      if (!planDayInRange(end)) return dateError();
+      task.start = fromDay(start);
+      task.end = fromDay(end);
+      cascadedTaskIds.push(task.id);
+    }
+  }
+  const conflicts = nextPlan.tasks.flatMap((task) => newDependencyConflicts(beforeById, byId, task));
+  const suggestedReason = (changesLink
+    ? (type === 'link' ? '新增依赖 ' : '解除依赖 ') + fromId + ' → ' + toId
+    : '调整 ' + target.id + ' 计划排期至 ' + target.start + ' ~ ' + target.end)
+    + (cascadedTaskIds.length ? '；顺延 ' + cascadedTaskIds.join('、') : '');
+  return {
+    valid: conflicts.length === 0, code: conflicts.length ? 'DEPENDENCY_CONFLICT' : 'OK',
+    message: targetConflict ? '手选开始日期早于上游结束日，请调整日期'
+      : conflicts.length ? '请解决新增或加重的依赖排期冲突' : '',
+    cyclePath: [], conflicts, cascadedTaskIds, suggestedReason, nextPlan,
+  };
+}
+
 // 推演使用日历日及完成后下一日开始的依赖关系,不修改输入计划。
 export function simulateDelays(data, delays = {}) {
   const tasks = data.tasks;
@@ -145,7 +267,7 @@ export function compute(data, todayStr) {
 
   // 负载:每人每周(周一起算)未完成任务数
   const weekStart = (d) => d - ((d + 3) % 7); // 1970-01-01 是周四
-  const load = {};
+  const load = Object.create(null);
   let minW = Infinity, maxW = -Infinity;
   for (const t of data.tasks) {
     if (t.status === 'done') continue;
