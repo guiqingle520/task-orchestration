@@ -8,6 +8,7 @@
 - `scripts/validate-plan.mjs` 解析和校验计划;`scripts/sync-git-progress.mjs` 根据 Git 提交同步任务进度。
 - `docs/PLAN_SPEC.md` 是计划格式与权限规范,`plan/plan.template.md` 是模板,`plan/plan.md` 是当前计划。
 - `docs/M4_DESIGN.md` 是 M4 阶段(T-17 ~ T-24:燃尽图、可视化规划器、多项目工作区、Webhook 预警)的详细技术设计与前后端接口契约。
+- `docs/M5_DESIGN.md` 是 M5 阶段(T-26 ~ T-35:甘特深度交互、时间机器、离线 HTML 导出、工作日历与工时预估核算、GitHub/GitLab Issue 双向同步)的详细技术设计与前后端接口契约。
 
 ## 启动与验证
 - 在项目根目录运行 `npm start`,打开 `http://localhost:5173`;可用环境变量 `PORT` 修改端口。

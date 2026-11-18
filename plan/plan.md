@@ -13,6 +13,9 @@ milestones:
   - id: M4
     name: 多项目工作区、可视化规划与预警演进
     due: 2026-12-15
+  - id: M5
+    name: 深度可视化交互、时间机器、精细核算与平台生态
+    due: 2027-01-08
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -289,6 +292,116 @@ tasks:
     progress: 100
     actualStart: 2026-11-18
     actualEnd: 2026-11-18
+  - id: T-26
+    title: 实现甘特排期变更与依赖连线预检算法(环检测与下游冲突顺延试算)
+    owner: codex
+    milestone: M5
+    start: 2026-12-15
+    end: 2026-12-16
+    deps: [T-11, T-19]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-27
+    title: 构建甘特图双端拉伸改期与锚点连线建立依赖及冲突高亮交互
+    owner: antigravity
+    milestone: M5
+    start: 2026-12-17
+    end: 2026-12-18
+    deps: [T-20, T-26]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-28
+    title: 实现 Git 历史计划切片提取接口与时间线演进差异对比算法
+    owner: codex
+    milestone: M5
+    start: 2026-12-17
+    end: 2026-12-18
+    deps: [T-7, T-12, T-21]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-29
+    title: 新增时间机器回放控制栏与甘特图历史基线幽灵条叠加交互
+    owner: antigravity
+    milestone: M5
+    start: 2026-12-21
+    end: 2026-12-22
+    deps: [T-27, T-28]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-30
+    title: 实现单文件自包含离线 HTML 打包器与敏感字段脱敏清洗纯函数
+    owner: codex
+    milestone: M5
+    start: 2026-12-21
+    end: 2026-12-22
+    deps: [T-14]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-31
+    title: 新增离线驾驶舱导出弹窗支持脱敏选项配置与一键生成分享包
+    owner: antigravity
+    milestone: M5
+    start: 2026-12-23
+    end: 2026-12-24
+    deps: [T-29, T-30]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-32
+    title: 实现工作日历与工时估算侧车服务及团队预估准确率核算算法
+    owner: codex
+    milestone: M5
+    start: 2026-12-23
+    end: 2026-12-25
+    deps: [T-13, T-17]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-33
+    title: 新增工作日历与工时故事点配置面板及团队预估偏差分析视图
+    owner: antigravity
+    milestone: M5
+    start: 2026-12-28
+    end: 2026-12-30
+    deps: [T-18, T-31, T-32]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-34
+    title: 实现 GitHub 与 GitLab Issue 双向同步适配器与服务接口
+    owner: codex
+    milestone: M5
+    start: 2026-12-28
+    end: 2026-12-30
+    deps: [T-23, T-25]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-35
+    title: 新增代码托管平台配置弹窗与任务 Issue 双向绑定同步交互
+    owner: antigravity
+    milestone: M5
+    start: 2027-01-04
+    end: 2027-01-05
+    deps: [T-24, T-33, T-34]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
 ---
 
 # 计划说明
@@ -312,3 +425,4 @@ tasks:
 变更记录:2026-11-17 规划者根据用户要求将未完成的 T-8、T-9、T-15、T-12、T-13、T-14 转交 codex；原计划日期和依赖保持不变。
 变更记录:2026-11-17 规划者按用户确认的 M4 方案增量规划里程碑 M4 与任务 T-17 ~ T-24(燃尽图、可视化规划器、多项目工作区、多渠道 Webhook 预警),由 codex 与 antigravity 并行分工。
 变更记录:2026-11-18 规划者按用户要求将 T-25 交由 codex 接手；计划日期排在 T-24 之后，因 M4 已实际交付，修复于 11-18 提前开始。
+变更记录:2026-11-18 规划者按用户要求增量规划里程碑 M5 与任务 T-26 ~ T-35(甘特深度交互、时间机器历史回放、单文件离线导出、工作日历与工时预估准确率核算、GitHub/GitLab Issue 双向同步),由 codex 与 antigravity 流水线并行完成。
