@@ -16,7 +16,15 @@ export function installM5Panels({ getLive, apiUrl, refresh, downloadFile, rerend
   const body = (input) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
   async function call(path, state, input) {
     const response = await fetch(apiUrl(path, state.projectId), input === undefined ? undefined : body(input));
-    const data = await response.json();
+    let data;
+    try { data = await response.json(); } catch { /* 旧服务可能返回纯文本 404 */ }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      const message = response.status === 404
+        ? (path === '/api/export/html' ? '当前运行的服务不支持离线导出。请在项目目录重启 npm start，再刷新页面重试。'
+          : '当前运行的服务缺少此接口。请在项目目录重启 npm start，再刷新页面重试。')
+        : '服务返回了无法识别的结果，请刷新页面后重试。';
+      throw Object.assign(new Error(message), { status: response.status });
+    }
     if (response.ok === false) throw Object.assign(new Error(data.message || '请求未成功'), { status: response.status, code: data.code });
     return data;
   }
@@ -113,7 +121,7 @@ export function installM5Panels({ getLive, apiUrl, refresh, downloadFile, rerend
       });
       if (exportEdit !== edit || !active(edit.state) || !$('exportHtmlDialog').open) return;
       if (typeof data.html !== 'string' || !data.html.startsWith('<!doctype html>')) throw new Error('服务未返回离线网页');
-      const filename = /^[w.-]+.html$/.test(data.filename) ? data.filename : 'dashboard.html';
+      const filename = typeof data.filename === 'string' && /^[\w.-]+\.html$/.test(data.filename) ? data.filename : 'dashboard.html';
       downloadFile(data.html, 'text/html;charset=utf-8', filename);
       message('reportMessage', '已下载 ' + filename);
       close('exportHtmlDialog');
