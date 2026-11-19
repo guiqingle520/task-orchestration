@@ -22,6 +22,9 @@ milestones:
   - id: M7
     name: 跨项目总览与汇报
     due: 2026-12-18
+  - id: M8
+    name: 今日行动工作台、新项目接入向导与 MCP 插件
+    due: 2026-12-25
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -639,6 +642,50 @@ tasks:
     progress: 100
     actualStart: 2026-11-19
     actualEnd: 2026-11-19
+  - id: T-57
+    title: 实现可开工任务判定（区分现在可开工与可提前开始）、验收要求精确提取与智能体交接说明生成
+    owner: codex
+    milestone: M8
+    start: 2026-12-21
+    end: 2026-12-22
+    deps: [T-56]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-58
+    title: 在项目总览实现今日行动（需跟进与可开工）负责人筛选、进度更新与交接说明预览复制
+    owner: antigravity
+    milestone: M8
+    start: 2026-12-22
+    end: 2026-12-23
+    deps: [T-57]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-59
+    title: 实现新项目接入向导支持目录计划预检、缺失计划模板预览创建与格式错误原文件保护
+    owner: codex
+    milestone: M8
+    start: 2026-12-23
+    end: 2026-12-24
+    deps: [T-54, T-57]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-60
+    title: 实现零依赖 stdio MCP 服务（查询、校验与带并发冲突检查的进度写回）及双端智能体插件封装
+    owner: antigravity
+    milestone: M8
+    start: 2026-12-24
+    end: 2026-12-25
+    deps: [T-58, T-59]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
 ---
 
 # 计划说明
@@ -730,3 +777,14 @@ tasks:
 变更记录:2026-11-19 antigravity 完成 T-55；实现 Windows 常驻 STA 进程复用（3 分钟空闲自动回收、Base64 安全传输与打开弹窗后台预热），点击选择文件夹即时弹出。
 变更记录:2026-11-19 规划者按用户确认的布局方案新增 M7 的 T-56，重构驾驶舱为侧栏真分页多视图（跨项目总览/项目总览/计划时间线/里程碑与风险/负载与工时/报告与集成），并将计划时间线改为通栏全宽展示。
 变更记录:2026-11-19 antigravity 完成 T-56；重构为 6 视图真分页架构、2 列等宽平衡网格与通栏全宽时间线，兼容所有历史锚点与跨视图联动跳转，全量 53 项测试通过。
+
+### M8 · 今日行动工作台、新项目接入向导与 MCP 插件
+
+| 任务 | 验收标准 |
+|---|---|
+| T-57 | 只有 `todo` 且全部前置已 `done` 的任务才进入候选，无依赖也算就绪。按当前统计日区分「现在可开工」（`start <= today`）和「可提前开始」（`start > today`），并给出入选原因（如「无前置依赖」「前置 T-26、T-27 均已完成」）。提取验收要求时精确匹配任务 ID（`T-5` 不得误配 `T-50`）；计划正文无对应验收条目时明确显示「未填写」。 |
+| T-58 | 将项目总览右下卡片由「人员负载」替换为「今日行动」（「人员负载」保留在「负载与工时」页）。「需跟进」和「可开工」共用负责人筛选，保留各自入选原因。每行优先露出「更新进度」和「复制开工说明」，点击任务标题跳到计划时间线定位；不设 `+25%` 按钮。更新进度复用现有弹窗与 `expected` 冲突检查；复制开工说明支持预览并保持任务原状态不变；时间机器历史回放模式保持只读。端到端验收：在总览完成前置任务 → 下游任务立即出现在可开工列表 → 预览并复制开工说明 → 刷新后确认下游任务仍为 `todo`。 |
+| T-59 | 选定目录后明确区分三种结果：1) 计划存在且有效则直接注册；2) 缺少 `plan/plan.md` 则提供默认模板预览并经用户确认后创建注册；3) 已有 `plan/plan.md` 但格式或校验错误则明确显示错误并保留原文件，绝不覆盖用户已有的计划文件。 |
+| T-60 | 先交付查询与校验工具，再开放进度写回。严格遵守 `docs/PLAN_SPEC.md` 角色权限：普通执行工具仅允许更新任务执行字段（`status` / `progress` / `actualStart` / `actualEnd`）。写入须覆盖并发冲突检查：两个 Agent 同时读到旧进度并先后提交时，后提交者收到 `409`/冲突提示而不覆盖前次结果。插件封装分别以 Codex 和 Antigravity 实际加载并调用成功为准。 |
+
+变更记录:2026-11-19 规划者汇总用户、Codex 与 Antigravity 共识，新增里程碑 M8 与任务 T-57 ~ T-60（共 4 项任务：T-57/T-59 由 codex 负责，T-58/T-60 由 antigravity 负责），并将四条验收细则写入计划说明。
