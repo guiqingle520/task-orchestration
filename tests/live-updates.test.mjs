@@ -76,6 +76,8 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   assert.equal(updated.progress, 20);
   assert.ok(updated.actualStart);
   const loaded = await (await fetch(`${base}/api/plan`)).json();
+  assert.match(loaded.acceptanceByTask['T-57'], /现在可开工/);
+  assert.equal(loaded.raw, undefined);
   const payload = { ...loaded.data, expectedRevision: loaded.revision, reason: '' };
   payload.tasks[0].title += ' 修改';
   const save = (body) => fetch(`${base}/api/plan/save`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });

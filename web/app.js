@@ -731,6 +731,7 @@ async function loadHistoryFrame(index) {
     projectId: base.projectId,
     epoch: workspaceEpoch,
     data: cached.data,
+    acceptanceByTask: cached.acceptanceByTask || {},
     revision: commit.hash,
     commits: {},
     m,
@@ -1203,7 +1204,8 @@ async function refresh() {
     }
     return;
   }
-  const refreshed = { projectId: res.projectId || projectId, epoch: workspaceEpoch, data: res.data, revision: res.revision || '', commits: res.commits || {}, m: compute(res.data, $('today').value || todayLocal()) };
+  const refreshed = { projectId: res.projectId || projectId, epoch: workspaceEpoch, data: res.data, revision: res.revision || '',
+    acceptanceByTask: res.acceptanceByTask || {}, commits: res.commits || {}, m: compute(res.data, $('today').value || todayLocal()) };
   if (isTimeMachine) {
     liveBackup = refreshed;
     return;

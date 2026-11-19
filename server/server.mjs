@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
 import { getTaskCommitsMap, parseCommitMessage, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { createWorkspaces } from './workspaces.mjs';
+import { extractAcceptanceByTask } from './plan-acceptance.mjs';
 import { summarizeProject, validPortfolioDate } from './portfolio.mjs';
 import { createWebhookService } from './webhooks.mjs';
 import { getPlanAtCommit, HistoryError, listPlanHistory, summarizePlanFrame } from './history.mjs';
@@ -74,8 +75,9 @@ function readPlanSnapshot(project, { includeRaw = false } = {}) {
 }
 
 function loadPlan(project) {
-  const snapshot = readPlanSnapshot(project);
-  return snapshot.data ? { ...snapshot, commits: getTaskCommitsMap(project.repoRoot) } : snapshot;
+  const { raw, ...snapshot } = readPlanSnapshot(project, { includeRaw: true });
+  if (!snapshot.data) return snapshot;
+  return { ...snapshot, acceptanceByTask: extractAcceptanceByTask(raw), commits: getTaskCommitsMap(project.repoRoot) };
 }
 
 function writePlanAtomically(planFile, output, expectedRevision = null) {

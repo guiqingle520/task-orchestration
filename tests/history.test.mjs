@@ -32,7 +32,7 @@ test('Git history stays in the registered repo and skips broken versions of its 
   git(['init', '-q', '--object-format=sha1']);
   await mkdir(dirname(project.planPath));
   assert.deepEqual(await listPlanHistory(project), []);
-  await writeFile(project.planPath, markdown('todo', 0));
+  await writeFile(project.planPath, markdown('todo', 0) + '\n| 任务 | 验收标准 |\n|---|---|\n| T-1 | 首版验收 |\n');
   const first = commit('初始计划', '2026-01-02T00:30:00+08:00');
   await writeFile(join(repoRoot, 'README.md'), 'unrelated');
   commit('Unrelated file', '2026-01-02T10:00:00+08:00');
@@ -48,7 +48,10 @@ test('Git history stays in the registered repo and skips broken versions of its 
     [last, '2026-01-02', '完成任务', 'QA 团队', 100, 1],
   ]);
   assert.deepEqual((await listPlanHistory(project, 1)).map(({ hash }) => hash), [last]);
-  assert.equal((await getPlanAtCommit(project, first.slice(0, 7).toUpperCase())).data.tasks[0].progress, 0);
+  const firstFrame = await getPlanAtCommit(project, first.slice(0, 7).toUpperCase());
+  assert.equal(firstFrame.data.tasks[0].progress, 0);
+  assert.deepEqual(firstFrame.acceptanceByTask, { 'T-1': '首版验收' });
+  assert.deepEqual((await getPlanAtCommit(project, last)).acceptanceByTask, {});
   await assert.rejects(getPlanAtCommit(project, broken), { status: 404 });
   await assert.rejects(getPlanAtCommit(project, 'HEAD'), { status: 400 });
   const outsideHistory = git(['commit-tree', git(['rev-parse', 'HEAD^{tree}']), '-m', 'Detached snapshot']);

@@ -4,6 +4,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { parseFrontMatter, validate } from '../scripts/validate-plan.mjs';
 import { compute } from '../web/metrics.js';
+import { extractAcceptanceByTask } from './plan-acceptance.mjs';
 
 const run = promisify(execFile);
 const FORMAT = '%H%x00%h%x00%aI%x00%an%x00%s';
@@ -49,12 +50,13 @@ function commitMetadata(line) {
   return { hash, shortHash, date: timestamp.slice(0, 10), timestamp, author, subject };
 }
 
-async function readVersion({ git, path }, hash) {
+async function readVersion({ git, path }, hash, includeAcceptance = false) {
   const raw = await git(['show', hash + ':' + path], [128]);
   if (raw == null) return null;
   try {
     const data = parseFrontMatter(raw);
-    return data && !validate(data).length ? data : null;
+    if (!data || validate(data).length) return null;
+    return includeAcceptance ? { data, acceptanceByTask: extractAcceptanceByTask(raw) } : { data };
   } catch { return null; }
 }
 
@@ -82,8 +84,8 @@ export async function listPlanHistory(project, limit = 50) {
   // 有界并行读取快照，让 Git I/O 不阻塞实时刷新和 SSE。
   for (let i = 0; i < records.length; i += 4) {
     const batch = await Promise.all(records.slice(i, i + 4).map(async (commit) => {
-      const data = await readVersion(context, commit.hash);
-      return data && { ...commit, ...summarizePlanFrame(data, commit.date) };
+      const frame = await readVersion(context, commit.hash);
+      return frame && { ...commit, ...summarizePlanFrame(frame.data, commit.date) };
     }));
     commits.push(...batch.filter(Boolean));
   }
@@ -100,8 +102,8 @@ export async function getPlanAtCommit(project, commitHash) {
   if (!resolved) throw missing();
   const hash = resolved.trim();
   if (await git(['merge-base', '--is-ancestor', hash, 'HEAD'], [1, 128]) === null) throw missing();
-  const data = await readVersion(context, hash);
-  if (!data) throw missing();
+  const frame = await readVersion(context, hash, true);
+  if (!frame) throw missing();
   const line = await git(['show', '-s', '--format=' + FORMAT, hash]);
-  return { commit: commitMetadata(line.replace(/\r?\n$/, '')), data };
+  return { commit: commitMetadata(line.replace(/\r?\n$/, '')), ...frame };
 }

@@ -649,10 +649,10 @@ tasks:
     start: 2026-12-21
     end: 2026-12-22
     deps: [T-56]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
   - id: T-58
     title: 在项目总览实现今日行动（需跟进与可开工）负责人筛选、进度更新与交接说明预览复制
     owner: antigravity
@@ -660,9 +660,9 @@ tasks:
     start: 2026-12-22
     end: 2026-12-23
     deps: [T-57]
-    status: todo
-    progress: 0
-    actualStart: null
+    status: doing
+    progress: 10
+    actualStart: 2026-11-19
     actualEnd: null
   - id: T-59
     title: 实现新项目接入向导支持目录计划预检、缺失计划模板预览创建与格式错误原文件保护
@@ -788,3 +788,5 @@ tasks:
 | T-60 | 先交付查询与校验工具，再开放进度写回。严格遵守 `docs/PLAN_SPEC.md` 角色权限：普通执行工具仅允许更新任务执行字段（`status` / `progress` / `actualStart` / `actualEnd`）。写入须覆盖并发冲突检查：两个 Agent 同时读到旧进度并先后提交时，后提交者收到 `409`/冲突提示而不覆盖前次结果。插件封装分别以 Codex 和 Antigravity 实际加载并调用成功为准。 |
 
 变更记录:2026-11-19 规划者汇总用户、Codex 与 Antigravity 共识，新增里程碑 M8 与任务 T-57 ~ T-60（共 4 项任务：T-57/T-59 由 codex 负责，T-58/T-60 由 antigravity 负责），并将四条验收细则写入计划说明。
+变更记录:2026-11-19 codex 开始 T-57，按既定验收标准提前开发，保留原计划日期。
+变更记录:2026-11-19 codex 完成 T-57。T-58 可从 web/task-handoff.js 引入 readyTasks(last.data.tasks, last.m.today)，先用完整任务列表判定，再按负责人筛选，availability 为 now 或 early，reason 为入选原因。总览与任务详情共用 buildTaskHandoff(last.data, taskId, last.acceptanceByTask) 生成纯文本预览及复制内容。实时与历史快照分别提供本版本的验收标准。
