@@ -3,6 +3,8 @@ import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown
 import { installM5Panels } from './m5-panels.js';
 import { filterTasks, followUpTasks, milestoneDelay, normalizeQuery, readTaskLink, taskLinkUrl } from './m6.js';
 import { closeSearchPicker, enhanceSearchPicker, syncSearchPicker } from './search-picker.js';
+import { installPortfolio } from './portfolio-panel.js';
+import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -28,8 +30,11 @@ let planGesture = null;
 let planConfirmation = null;
 let isCreatingTask = false;
 let plannerMode = false;
-let pendingTaskLink = readTaskLink(globalThis.location?.search ?? '');
-let currentProjectId = pendingTaskLink?.project || '';
+const pageSearch = new URLSearchParams(globalThis.location?.search);
+let pendingTaskLink = readTaskLink(pageSearch);
+let currentProjectId = pageSearch.get('project') || '';
+let scrollToDeliveries = !pendingTaskLink && globalThis.location?.hash === '#deliveries';
+let portfolioActive = false;
 let defaultProjectId = 'default';
 let eventSource = null;
 let webhookChannelsDraft = [];
@@ -545,23 +550,27 @@ $('milestoneForm').addEventListener('submit', async (event) => {
 });
 
 // 多项目工作区切换与注册 (T-22)
+function syncProjectOptions(registry) {
+  defaultProjectId = registry.default || 'default';
+  const select = $('projectSelect');
+  const options = registry.projects.map(p => {
+    const progress = typeof p.overall === 'number' ? `${Math.round(p.overall)}%` : '';
+    const state = Object.hasOwn(PROJECT_HEALTH_LABELS, p.health) ? p.health : 'unavailable';
+    const label = progress ? `${p.name} · ${progress}` : p.name;
+    return `<option value="${esc(p.id)}" data-health="${state}" data-label="${esc(label)}" data-search-label="${esc(p.name)}">${esc(label)} · ${PROJECT_HEALTH_LABELS[state]}</option>`;
+  }).join('');
+  if (select.innerHTML !== options) select.innerHTML = options;
+  select.value = selectedProjectId();
+  syncSearchPicker(select);
+}
+
 async function refreshProjects() {
+  if (portfolioActive) return;
   const sequence = ++projectsSequence;
   try {
     const res = await (await fetch('/api/projects')).json();
-    if (sequence !== projectsSequence || !Array.isArray(res.projects)) return;
-    defaultProjectId = res.default || 'default';
-    const health = { green: '正常', yellow: '有风险', red: '告急', unavailable: '不可用' };
-    const select = $('projectSelect');
-    const options = res.projects.map((p) => {
-      const progress = typeof p.overall === 'number' ? `${Math.round(p.overall)}%` : '';
-      const state = Object.hasOwn(health, p.health) ? p.health : 'unavailable';
-      const label = progress ? `${p.name} · ${progress}` : p.name;
-      return `<option value="${esc(p.id)}" data-health="${state}" data-label="${esc(label)}" data-search-label="${esc(p.name)}">${esc(label)} · ${health[state]}</option>`;
-    }).join('');
-    if (select.innerHTML !== options) select.innerHTML = options;
-    select.value = selectedProjectId();
-    syncSearchPicker(select);
+    if (portfolioActive || sequence !== projectsSequence || !Array.isArray(res.projects)) return;
+    syncProjectOptions(res);
   } catch { /* 单项目回退 */ }
 }
 
@@ -762,12 +771,18 @@ function stopPlay() {
 async function switchProject(projectId) {
   closeSearchPicker();
   pendingTaskLink = null;
+  scrollToDeliveries = false;
   showTaskLinkNotice('');
-  if (globalThis.location && readTaskLink(location.search)) {
+  if (globalThis.location) {
     const url = new URL(location.href);
-    url.searchParams.delete('project');
+    url.searchParams.set('project', projectId);
     url.searchParams.delete('task');
-    history.replaceState(null, '', url);
+    if (portfolioActive) {
+      url.hash = '#overview';
+      history.pushState(null, '', url);
+      updateWorkspaceNav();
+      $('overview').scrollIntoView?.({ block: 'start' });
+    } else history.replaceState(null, '', url);
   }
   currentProjectId = projectId;
   workspaceEpoch++;
@@ -941,7 +956,8 @@ async function triggerNotify(mode, statusEl) {
 $('pushRisksBtn').addEventListener('click', () => triggerNotify('risks', $('webhookStatus')));
 $('pushReportBtn').addEventListener('click', () => triggerNotify('report', $('reportMessage')));
 
-$('today').value = todayLocal();
+$('today').value = (!pendingTaskLink && pageSearch.get('today')) || todayLocal();
+if (!$('today').value) $('today').value = todayLocal();
 $('today').addEventListener('change', refresh);
 $('reset').addEventListener('click', () => { $('today').value = todayLocal(); refresh(); });
 $('syncGit')?.addEventListener('click', async () => {
@@ -1038,16 +1054,24 @@ document.addEventListener('click', (e) => {
 function updateWorkspaceNav() {
   if (typeof location === 'undefined') return;
   const active = location.hash || '#overview';
+  const wasPortfolio = portfolioActive;
+  portfolioActive = active === '#portfolio';
+  if (wasPortfolio && !portfolioActive) portfolio.cancel();
+  $('portfolio').hidden = $('portfolioCrumb').hidden = !portfolioActive;
+  $('singleProjectView').hidden = $('project').hidden = $('plannerToggle').hidden = $('syncGit').hidden = portfolioActive;
+  $('updated').hidden = portfolioActive;
+  $('workspaceSkip').href = portfolioActive ? '#portfolio' : '#overview';
+  $('workspaceSkip').textContent = portfolioActive ? '跳到跨项目总览' : '跳到项目总览';
   document.querySelectorAll('.workspace-nav a').forEach((link) => {
     if (link.hash === active) link.setAttribute('aria-current', 'location');
     else link.removeAttribute('aria-current');
   });
+  return wasPortfolio !== portfolioActive;
 }
-globalThis.addEventListener?.('hashchange', updateWorkspaceNav);
-updateWorkspaceNav();
 
 async function refresh() {
   const sequence = ++refreshSequence;
+  if (portfolioActive) return portfolio.refresh($('today').value || todayLocal());
   const projectId = selectedProjectId();
   let res;
   try { res = await (await fetch(apiUrl('/api/plan'))).json(); }
@@ -1088,6 +1112,10 @@ async function refresh() {
     else { showTaskLinkNotice(''); revealTimelineItem(linked.task); revealed = true; }
   }
   if (!planGesture && !revealed) renderAll(false);
+  if (scrollToDeliveries) {
+    scrollToDeliveries = false;
+    if (location.hash === '#deliveries') $('deliveries').scrollIntoView?.({ block: 'start' });
+  }
   refreshProjects();
 }
 
@@ -1616,6 +1644,16 @@ const m5Panels = installM5Panels({
     if ($('taskDialog')?.open && $('taskIssue') && editingTask && !isCreatingTask) $('taskIssue').innerHTML = m5Panels.issueMarkup(editingTask.id);
   },
 });
+const portfolio = installPortfolio({ esc, syncProjects: syncProjectOptions });
+globalThis.addEventListener?.('hashchange', () => {
+  if (!updateWorkspaceNav()) return;
+  const target = $(portfolioActive ? 'portfolio' : (location.hash.slice(1) || 'overview'));
+  target?.scrollIntoView?.({ block: 'start' });
+  if (portfolioActive) target?.focus?.({ preventScroll: true });
+  else if (location.hash === '#deliveries') scrollToDeliveries = true;
+  void refresh();
+});
+updateWorkspaceNav();
 for (const [id, label] of Object.entries({
   projectSelect: '工作区项目', simTask: '模拟任务', burndownScope: '燃尽图里程碑', snapshots: '历史快照',
   planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterOwner: '负责人', filterMilestone: '里程碑',

@@ -492,10 +492,10 @@ tasks:
     start: 2026-12-10
     end: 2026-12-11
     deps: []
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
   - id: T-44
     title: 新增跨项目总览并支持按风险排序和进入项目
     owner: codex
@@ -503,10 +503,10 @@ tasks:
     start: 2026-12-14
     end: 2026-12-15
     deps: [T-43, T-47]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
   - id: T-45
     title: 从跨项目总览复制 Markdown 摘要并核对统计一致性
     owner: codex
@@ -514,10 +514,10 @@ tasks:
     start: 2026-12-16
     end: 2026-12-16
     deps: [T-44]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
   - id: T-46
     title: 为动态下拉框添加模糊搜索并验证键盘与多选操作
     owner: codex
@@ -623,3 +623,5 @@ tasks:
 变更记录:2026-11-19 按用户要求将 T-48 的里程碑导航图标改为红色，并用偏玫红的深红与风险图标的砖红区分。
 变更记录:2026-11-19 按用户要求优先交付 M6，T-39 至 T-42、T-46 和 T-47 提前开工；保留原计划日期和 M7 排期。
 变更记录:2026-11-19 M6 的七项任务全部完成。任务筛选、跟进、链接、可搜索下拉框和里程碑进度已通过 42 项回归测试与桌面及窄屏浏览器验证。
+变更记录:2026-11-19 按用户要求启动 M7 的 T-43 至 T-45，复用现有工作区和 M6 的状态标签，原计划日期保留。
+变更记录:2026-11-19 M7 三项任务全部完成；跨项目总览、状态色、项目及里程碑跳转和同口径 Markdown 摘要通过 45 项测试与桌面、窄屏浏览器验收。

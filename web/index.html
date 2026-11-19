@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body class="dashboard">
-<a class="skip-link" href="#overview">跳到项目总览</a>
+<a class="skip-link" id="workspaceSkip" href="#overview">跳到项目总览</a>
 <div class="workspace-shell">
   <aside class="workspace-rail" aria-label="工作区侧栏">
     <div class="workspace-brand"><span class="workspace-mark" aria-hidden="true"></span><div><strong>任务时间线驾驶舱</strong><small>项目调度台</small></div></div>
@@ -18,6 +18,7 @@
     </div>
     <nav class="workspace-nav" aria-label="驾驶舱导航">
       <div class="nav-label">驾驶舱</div>
+      <a href="#portfolio"><span aria-hidden="true">▦</span>跨项目总览</a>
       <a href="#overview" aria-current="location"><span aria-hidden="true">⊞</span>项目总览</a>
       <a href="#timeline"><span aria-hidden="true">≡</span>计划时间线</a>
       <a href="#reports"><span aria-hidden="true">▤</span>进度报告</a>
@@ -31,15 +32,26 @@
   </aside>
   <div class="workspace-content">
     <header class="top workspace-top">
-      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong></div>
+      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><strong id="portfolioCrumb" hidden>跨项目总览</strong></div>
       <div class="ctrl">
         <label class="date-control"><span>统计日</span><input type="date" id="today"></label>
         <button id="reset" title="恢复为真实今天">重置</button>
-        <label class="planner-toggle" title="开启后可新建/拆分任务、拖拽调整排期并记录变更原因"><input type="checkbox" id="plannerMode"> 规划模式</label>
+        <label class="planner-toggle" id="plannerToggle" title="开启后可新建/拆分任务、拖拽调整排期并记录变更原因"><input type="checkbox" id="plannerMode"> 规划模式</label>
         <button id="syncGit" title="扫描 git commit 历史中的任务 ID 并同步进度">同步 Git</button>
       </div>
     </header>
     <main class="dashboard-main">
+      <section id="portfolio" class="portfolio" aria-labelledby="portfolioTitle" tabindex="-1" hidden>
+        <div class="overview-head">
+          <div><h1 id="portfolioTitle">跨项目总览</h1><p>查看工作区所有项目的进度、风险和下一次交付。</p></div>
+          <button id="copyPortfolio" type="button" disabled>复制 Markdown 摘要</button>
+        </div>
+        <p id="portfolioStatus" class="portfolio-notice" role="status"></p>
+        <p id="portfolioCopyStatus" class="portfolio-notice" role="status"></p>
+        <textarea id="portfolioMarkdown" aria-label="跨项目 Markdown 摘要" rows="6" readonly hidden></textarea>
+        <div id="portfolioBody"></div>
+      </section>
+      <div id="singleProjectView">
       <div id="errors" class="errors" hidden></div>
       <p id="taskLinkNotice" class="task-link-notice" role="status" hidden></p>
       <div id="tmBanner" class="tm-banner" hidden>
@@ -142,6 +154,7 @@
             <div class="empty" id="issueStatus" role="status"></div>
           </section>
         </aside>
+      </div>
       </div>
     </main>
   </div>

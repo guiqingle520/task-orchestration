@@ -1,7 +1,7 @@
 import { matchOptions } from './m6.js';
+import { PROJECT_HEALTH_LABELS as healthLabels } from './portfolio.js';
 
 const controllers = new WeakMap();
-const healthLabels = { green: '正常', yellow: '有风险', red: '告急', unavailable: '不可用' };
 let openPicker = null;
 
 export function syncSearchPicker(select) {

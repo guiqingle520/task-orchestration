@@ -17,8 +17,7 @@ export function createWorkspaces(root) {
     if (!data || !Array.isArray(data.projects) || !data.projects.some((item) => item.id === data.default)) throw new Error('工作区配置无效');
     return data;
   }
-  function get(id) {
-    const data = read();
+  function get(id, data = read()) {
     const project = data.projects.find((item) => item.id === (id || data.default));
     if (!project) throw new Error('项目不存在');
     // 计划文件尚不存在时没有可读写内容,交给调用方报告“不可用”,不在这里抛错

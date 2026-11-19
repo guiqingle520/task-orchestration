@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
 import { getTaskCommitsMap, parseCommitMessage, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { createWorkspaces } from './workspaces.mjs';
+import { summarizeProject, validPortfolioDate } from './portfolio.mjs';
 import { createWebhookService } from './webhooks.mjs';
 import { getPlanAtCommit, HistoryError, listPlanHistory, summarizePlanFrame } from './history.mjs';
 import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
@@ -276,13 +277,22 @@ createServer((req, res) => {
   const host = req.headers.host || '';
   if (!new RegExp(`^(?:localhost|127\\.0\\.0\\.1):${port}$`, 'i').test(host) || (req.headers.origin && req.headers.origin !== `http://${host}`)) return json(res, 403, { message: '仅允许本机同源访问' });
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/api/portfolio' && req.method === 'GET') {
+    const today = url.searchParams.get('today') ?? dashboardToday();
+    if (!validPortfolioDate(today)) return json(res, 400, { message: '统计日必须是有效的 YYYY-MM-DD 日期' });
+    try {
+      const registry = workspaces.read();
+      const readRegisteredPlan = ({ id }) => readPlanSnapshot(workspaces.get(id, registry));
+      const projects = registry.projects.map(project => summarizeProject(project, today, readRegisteredPlan));
+      return json(res, 200, { today, default: registry.default, projects });
+    } catch { return json(res, 500, { message: '无法读取工作区项目列表' }); }
+  }
   if (url.pathname === '/api/projects' && req.method === 'GET') {
     try {
       const registry = workspaces.read();
-      const now = new Date();
-      const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      const today = dashboardToday();
       const projects = registry.projects.map((project) => {
-        const loaded = loadPlan(project);
+        const loaded = readPlanSnapshot(project);
         if (!loaded.data || validate(loaded.data).length) return { ...project, health: 'unavailable', overall: null, taskCount: 0 };
         const metrics = compute(loaded.data, today);
         return { ...project, health: metrics.summary.health, overall: metrics.summary.overall, taskCount: loaded.data.tasks.length };

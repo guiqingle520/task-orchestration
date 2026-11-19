@@ -33,7 +33,10 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   assert.match((await response.json()).errors.join(' '), /找不到/);
   assert.equal((await fetch(base)).status, 200);
   const list = async () => (await (await fetch(`${base}/api/projects`)).json()).projects;
+  const portfolio = async () => (await (await fetch(`${base}/api/portfolio?today=2026-11-19`)).json());
   assert.equal((await list())[0].health, 'unavailable');
+  assert.equal((await portfolio()).projects[0].overdueCount, null);
+  assert.equal((await fetch(`${base}/api/portfolio?today=2026-02-29`)).status, 400);
   await mkdir(join(root, 'plan'));
   const file = join(root, 'plan', 'plan.md');
   await writeFile(file, '---\nproject: broken\ninvalid YAML\n---\n');
@@ -110,6 +113,11 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   const register = await fetch(`${base}/api/projects`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'second', name: 'Second', repoRoot: secondRoot }) });
   assert.equal(register.status, 200, await register.clone().text());
   assert.equal((await (await fetch(`${base}/api/projects`)).json()).projects.length, 2);
+  const workspaceSummary = await portfolio();
+  assert.equal(workspaceSummary.today, '2026-11-19');
+  assert.deepEqual(workspaceSummary.projects.map(({ id }) => id), ['default', 'second']);
+  assert.ok(workspaceSummary.projects.every(project => project.health !== 'unavailable'));
+  assert.doesNotMatch(JSON.stringify(workspaceSummary), /repoRoot|planPath|commits|OFFLINE-COMMIT-FIXTURE/);
   assert.equal((await (await fetch(`${base}/api/plan?project=second`)).json()).data.project, 'second');
   assert.equal((await (await fetch(`${base}/api/plan`)).json()).data.project, 'replaced');
   assert.equal((await fetch(`${base}/api/plan?project=missing`)).status, 404);
