@@ -640,6 +640,116 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   font-size:12px;
   font-weight:500;
 }
+/* T-53: 统一弹窗表单标签对齐与满宽输入框布局 */
+.dashboard .task-dialog {
+  padding:22px 24px;
+  border:1px solid #e4e4e7;
+  border-radius:12px;
+  box-shadow:0 18px 48px rgba(15,23,42,.18);
+}
+.dashboard .task-dialog h2 {
+  font-size:17px;
+  font-weight:700;
+  margin:0 0 14px;
+  color:var(--t);
+}
+.dashboard .task-dialog form > label,
+.dashboard .task-dialog .planner-fields > label,
+.dashboard .task-dialog #execFields > label,
+.dashboard .task-dialog .field-row > label {
+  display:grid;
+  gap:5px;
+  margin:12px 0;
+  font-size:12px;
+  font-weight:500;
+  color:var(--m);
+}
+.dashboard .task-dialog label:has(> input[type=checkbox]) {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:10px 0;
+  font-size:13px;
+  font-weight:400;
+  color:var(--t);
+  cursor:pointer;
+}
+.dashboard .task-dialog .field-row {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+  align-items:end;
+}
+.dashboard .task-dialog .field-row > label { margin:8px 0; }
+.dashboard .task-dialog .field-row > label:has(> input[type=checkbox]) { min-height:36px; }
+.dashboard .task-dialog :is(input:not([type=checkbox]):not([type=radio]),select,textarea) {
+  display:block;
+  width:100%;
+  min-width:0;
+  margin:0;
+  min-height:36px;
+  padding:7px 10px;
+  border:1px solid #d4d4d8;
+  border-radius:7px;
+  background:#fff;
+  color:var(--t);
+  font:inherit;
+  font-size:13px;
+  transition:border-color .14s ease,box-shadow .14s ease;
+}
+.dashboard .task-dialog textarea { min-height:64px; resize:vertical; }
+.dashboard .task-dialog :is(input:not([type=checkbox]):not([type=radio]),select,textarea):focus {
+  outline:none;
+  border-color:var(--acc);
+  box-shadow:0 0 0 3px rgba(36,88,207,.12);
+}
+.dashboard .task-dialog input[readonly] { background:#f4f4f5; color:var(--m); }
+.dashboard .task-dialog input[type=checkbox] {
+  width:auto;
+  min-height:auto;
+  margin:0;
+  padding:0;
+  flex:none;
+}
+.dashboard .task-dialog .m5-table-scroll td input {
+  min-height:28px;
+  padding:3px 6px;
+  font-size:12px;
+}
+.dashboard .task-dialog .webhook-row input {
+  width:auto;
+  min-height:32px;
+  padding:5px 8px;
+}
+.dashboard .task-dialog .dialog-actions {
+  margin-top:18px;
+  padding-top:14px;
+  border-top:1px solid var(--line);
+  gap:8px;
+}
+.dashboard .task-dialog .input-with-action {
+  display:grid;
+  gap:5px;
+  margin:12px 0;
+}
+.dashboard .task-dialog .input-with-action > label {
+  margin:0;
+  font-size:12px;
+  font-weight:500;
+  color:var(--m);
+}
+.dashboard .task-dialog .input-action-row {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:8px;
+  align-items:center;
+}
+.dashboard .task-dialog .input-action-row button {
+  min-height:36px;
+  white-space:nowrap;
+}
+.dashboard .task-dialog [role=status]:empty { display:none; }
+.dashboard .task-dialog [role=status]:not(:empty) { margin:10px 0 0; font-size:12px; }
 
 @media(max-width:1220px) {
   .workspace-shell { grid-template-columns:180px minmax(0,1fr); }

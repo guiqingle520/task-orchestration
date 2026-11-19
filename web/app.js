@@ -812,6 +812,48 @@ $('addProjectBtn').addEventListener('click', () => {
   $('projRootInput').value = '';
   $('projectMessage').textContent = '';
   $('projectDialog').showModal?.();
+  void fetch('/api/projects/pick-directory', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ warmup: true }),
+  }).catch(() => {});
+});
+$('pickProjectDirBtn')?.addEventListener('click', async () => {
+  const btn = $('pickProjectDirBtn');
+  btn.disabled = true;
+  btn.textContent = '选择中…';
+  $('projectMessage').textContent = '';
+  try {
+    const response = await fetch('/api/projects/pick-directory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ initialPath: $('projRootInput').value.trim() }),
+    });
+    if (response.status === 404) {
+      $('projectMessage').textContent = '当前服务不支持选择文件夹，请重启驾驶舱服务或手动输入路径';
+      return;
+    }
+    const result = await response.json();
+    if (!response.ok) {
+      $('projectMessage').textContent = result.message || '无法打开文件夹选择器';
+      return;
+    }
+    if (result.cancelled || !result.path) return;
+    $('projRootInput').value = result.path;
+    const folderName = result.path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || '';
+    if (folderName) {
+      if (!$('projNameInput').value.trim()) $('projNameInput').value = folderName;
+      if (!$('projIdInput').value.trim()) {
+        const slug = folderName.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+        if (slug) $('projIdInput').value = slug;
+      }
+    }
+  } catch {
+    $('projectMessage').textContent = '无法连接服务，请手动输入路径';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '选择文件夹';
+  }
 });
 $('closeProject').addEventListener('click', () => $('projectDialog').close?.());
 $('projectForm').addEventListener('submit', async (event) => {

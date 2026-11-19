@@ -14,6 +14,7 @@ import { getPlanAtCommit, HistoryError, listPlanHistory, summarizePlanFrame } fr
 import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
 import { CapacityConfigError, normalizeCapacityConfig, readCapacityConfig, writeCapacityConfig } from './capacity.mjs';
 import { createIntegrationService, IntegrationError } from './integrations.mjs';
+import { createFolderPicker, FolderPickerError } from './folder-picker.mjs';
 import { compute, findNewDependencyConflicts } from '../web/metrics.js';
 import { buildReport, computeCapacityMetrics, computeTimelineDiff } from '../web/analysis.js';
 
@@ -23,6 +24,7 @@ const port = Number(process.env.PORT || 5173);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const clients = new Map();
 const workspaces = createWorkspaces(root);
+const pickFolder = createFolderPicker();
 const webhooks = createWebhookService(root);
 const integrations = createIntegrationService(root, {
   today: dashboardToday,
@@ -311,6 +313,23 @@ createServer((req, res) => {
     return withJsonBody(req, res, 16 * 1024, (input) => {
       try { const added = workspaces.add(input); watchProject(added); json(res, 200, { ok: true, project: added }); }
       catch (err) { json(res, 400, { message: err.message }); }
+    });
+  }
+  if (url.pathname === '/api/projects/pick-directory' && req.method === 'POST') {
+    return withJsonBody(req, res, 4 * 1024, (input) => {
+      if (input?.warmup === true) {
+        pickFolder.warmup?.();
+        return json(res, 200, { ok: true, warmed: true });
+      }
+      void (async () => {
+        try {
+          const initialPath = typeof input?.initialPath === 'string' ? input.initialPath : '';
+          const picked = await pickFolder({ initialPath });
+          json(res, 200, { ok: true, ...picked });
+        } catch (err) {
+          json(res, err instanceof FolderPickerError ? err.status : 500, { message: err.message || '无法打开文件夹选择器' });
+        }
+      })();
     });
   }
   let project;

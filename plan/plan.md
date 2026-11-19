@@ -595,6 +595,39 @@ tasks:
     progress: 100
     actualStart: 2026-11-19
     actualEnd: 2026-11-19
+  - id: T-53
+    title: 修复添加项目等弹窗表单的标签对齐与输入框满宽布局
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-52]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
+  - id: T-54
+    title: 支持注册项目时调用系统原生目录选择器选择本地仓库文件夹
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-53]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
+  - id: T-55
+    title: 优化 Windows 文件夹选择器启动延迟（弹窗打开时预热与常驻复用）
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-54]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
 ---
 
 # 计划说明
@@ -678,3 +711,9 @@ tasks:
 变更记录:2026-11-19 antigravity 完成 T-51；抽取甘特布局纯函数实现窄屏刻度自适应、里程碑标签两层错排/边界翻转与 resize 重绘，全量 50 项测试通过。
 变更记录:2026-11-19 规划者按用户反馈新增 M7 的 T-52，统一驾驶舱所有按钮、下拉触发器、分段控件与组合按钮的现代白底风格。
 变更记录:2026-11-19 antigravity 完成 T-52；消除原生灰底硬框按钮，统一主/次/轻按钮、浅灰胶囊分段器、组合下拉与 hover/active/disabled 状态，全量 50 项测试通过。
+变更记录:2026-11-19 规划者按用户反馈新增 M7 的 T-53，统一修复添加项目及其他弹窗的表单字段对齐与输入框宽度布局。
+变更记录:2026-11-19 antigravity 完成 T-53；统一所有弹窗表单为标签在上、满宽输入框在下，修正复选框对齐、聚焦高亮与底部分隔操作栏。
+变更记录:2026-11-19 规划者按用户要求新增 M7 的 T-54，新增本机目录选择接口并在添加项目弹窗提供「选择文件夹」按钮及名称自动预填。
+变更记录:2026-11-19 antigravity 完成 T-54；新增 server/folder-picker.mjs 与 POST /api/projects/pick-directory 接口，支持原生文件夹选择与项目名/代号自动预填，全量 53 项测试通过。
+变更记录:2026-11-19 规划者按用户反馈新增 M7 的 T-55，通过弹窗打开时预热与短时常驻 PowerShell STA 进程消除文件夹选择器冷启动卡顿。
+变更记录:2026-11-19 antigravity 完成 T-55；实现 Windows 常驻 STA 进程复用（3 分钟空闲自动回收、Base64 安全传输与打开弹窗后台预热），点击选择文件夹即时弹出。
