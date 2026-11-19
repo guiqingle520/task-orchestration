@@ -6,7 +6,7 @@
 <title>任务时间线驾驶舱</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body class="dashboard">
+<body class="dashboard" data-view="overview">
 <a class="skip-link" id="workspaceSkip" href="#overview">跳到项目总览</a>
 <div class="workspace-shell">
   <aside class="workspace-rail" aria-label="工作区侧栏">
@@ -17,22 +17,20 @@
       <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 添加项目</button>
     </div>
     <nav class="workspace-nav" aria-label="驾驶舱导航">
-      <div class="nav-label">驾驶舱</div>
-      <a href="#portfolio"><span aria-hidden="true">▦</span>跨项目总览</a>
-      <a href="#overview" aria-current="location"><span aria-hidden="true">⊞</span>项目总览</a>
-      <a href="#timeline"><span aria-hidden="true">≡</span>计划时间线</a>
-      <a href="#reports"><span aria-hidden="true">▤</span>进度报告</a>
-      <a href="#snapshots-panel"><span aria-hidden="true">◷</span>基线与快照</a>
-      <div class="nav-label">配置与连接</div>
-      <a href="#deliveries"><span aria-hidden="true">⚑</span>里程碑</a>
-      <a href="#risk-panel"><span aria-hidden="true">△</span>风险与预警</a>
-      <a href="#integrations"><span aria-hidden="true">↗</span>平台集成</a>
+      <div class="nav-label">工作区</div>
+      <a href="#portfolio" data-view="portfolio"><span aria-hidden="true">▦</span>跨项目总览</a>
+      <div class="nav-label">项目视图</div>
+      <a href="#overview" data-view="overview" aria-current="location"><span aria-hidden="true">⊞</span>项目总览</a>
+      <a href="#timeline" data-view="timeline"><span aria-hidden="true">≡</span>计划时间线</a>
+      <a href="#deliveries" data-view="delivery"><span aria-hidden="true">⚑</span>里程碑与风险</a>
+      <a href="#capacityCard" data-view="capacity"><span aria-hidden="true">◷</span>负载与工时</a>
+      <a href="#reports" data-view="tools"><span aria-hidden="true">▤</span>报告与集成</a>
     </nav>
     <div class="workspace-foot"><span class="live"><i></i>本地工作区</span><span id="updated" role="status">连接中…</span></div>
   </aside>
   <div class="workspace-content">
     <header class="top workspace-top">
-      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><strong id="portfolioCrumb" hidden>跨项目总览</strong></div>
+      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><span id="viewCrumbSep" aria-hidden="true">›</span><span id="viewCrumb">项目总览</span><strong id="portfolioCrumb" hidden>跨项目总览</strong></div>
       <div class="ctrl">
         <label class="date-control"><span>统计日</span><input type="date" id="today"></label>
         <button id="reset" title="恢复为真实今天">重置</button>
@@ -59,11 +57,21 @@
         <button type="button" id="tmBannerExit" class="btn-sm">退出回放</button>
       </div>
       <section id="overview" class="overview" aria-labelledby="overview-title">
-        <div class="overview-head"><div><h1 id="overview-title">项目总览</h1><p><span id="overviewProject"></span><span>迭代计划与交付进度</span></p></div><span id="pill" class="pill"></span></div>
+        <div class="overview-head">
+          <div><h1 id="overview-title">项目总览</h1><p><span id="overviewProject"></span><span>迭代计划与交付进度</span></p></div>
+          <div class="overview-head-actions">
+            <a class="overview-cta" href="#timeline">打开计划时间线 →</a>
+            <span id="pill" class="pill"></span>
+          </div>
+        </div>
         <div id="kpis" class="kpis"></div>
       </section>
-      <div class="dashboard-grid">
-        <section id="timeline" class="card gantt-card" aria-labelledby="timeline-title">
+      <header id="sectionViewHead" class="section-view-head" hidden>
+        <h1 id="sectionViewTitle"></h1>
+        <p id="sectionViewDesc"></p>
+      </header>
+      <div class="dashboard-board">
+        <section id="timeline" class="card gantt-card" data-views="timeline" aria-labelledby="timeline-title">
           <div class="timeline-heading">
             <div><h2 id="timeline-title">计划时间线</h2><p id="timelineRange"></p></div>
             <div class="timeline-heading-actions">
@@ -130,50 +138,48 @@
           </section>
           </div>
         </section>
-        <aside class="dashboard-side" aria-label="项目分析与操作">
-          <section class="card">
-            <div class="card-head">
-              <h2>燃尽趋势</h2>
-              <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
-            </div>
-            <div id="burndownSummary" class="burndown-summary"></div>
-            <div id="burndownChart" class="burndown-chart"></div>
-            <div class="legend chart-key"><span><i class="sw act"></i>实际</span><span><i class="sw ghost"></i>计划</span></div>
-          </section>
-          <section class="card" id="deliveries"><div class="card-head"><h2>里程碑进度</h2><span class="empty">所有阶段</span></div><div id="milestones"></div></section>
-          <section class="card" id="risk-panel">
-            <div class="card-head">
-              <h2>需要关注</h2><span id="riskCount" class="empty"></span>
-            </div>
-            <ul id="risks" class="risks"></ul>
-            <div class="snapshot-controls card-actions">
-                <button type="button" id="pushRisksBtn">推送预警</button>
-                <button type="button" id="configWebhookBtn">配置渠道</button>
-            </div>
-            <div id="webhookStatus" class="snapshot-result" role="status"></div>
-          </section>
-          <section class="card" id="reports">
-            <h2>进度报告</h2>
-            <div class="snapshot-controls">
-              <button id="exportMarkdown">导出 Markdown</button>
-              <button id="exportSvg">导出 SVG</button>
-              <button type="button" id="exportHtmlBtn">导出离线网页</button>
-              <button id="copySummary">复制摘要</button>
-              <button type="button" id="pushReportBtn">推送周报</button>
-            </div>
-            <div id="reportMessage" class="snapshot-result" role="status"></div>
-          </section>
-          <section class="card" id="snapshots-panel"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
-          <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
-          <section class="card" id="capacityCard">
-            <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
-            <div id="capacityMetrics" aria-live="polite"></div>
-          </section>
-          <section class="card" id="integrations">
-            <div class="card-head"><h2>平台集成</h2><div class="snapshot-controls"><button type="button" id="configIntegrationBtn">配置平台</button><button type="button" id="issueSyncBtn">Issue 同步</button></div></div>
-            <div class="empty" id="issueStatus" role="status"></div>
-          </section>
-        </aside>
+        <section class="card" id="burndownCard" data-views="overview">
+          <div class="card-head">
+            <h2>燃尽趋势</h2>
+            <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
+          </div>
+          <div id="burndownSummary" class="burndown-summary"></div>
+          <div id="burndownChart" class="burndown-chart"></div>
+          <div class="legend chart-key"><span><i class="sw act"></i>实际</span><span><i class="sw ghost"></i>计划</span></div>
+        </section>
+        <section class="card" id="risk-panel" data-views="overview delivery">
+          <div class="card-head">
+            <h2>需要关注</h2><span id="riskCount" class="empty"></span>
+          </div>
+          <ul id="risks" class="risks"></ul>
+          <div class="snapshot-controls card-actions">
+            <button type="button" id="pushRisksBtn">推送预警</button>
+            <button type="button" id="configWebhookBtn">配置渠道</button>
+          </div>
+          <div id="webhookStatus" class="snapshot-result" role="status"></div>
+        </section>
+        <section class="card" id="deliveries" data-views="overview delivery"><div class="card-head"><h2>里程碑进度</h2><span class="empty">所有阶段</span></div><div id="milestones"></div></section>
+        <section class="card" id="loadCard" data-views="overview capacity"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
+        <section class="card" id="capacityCard" data-views="capacity">
+          <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
+          <div id="capacityMetrics" aria-live="polite"></div>
+        </section>
+        <section class="card" id="reports" data-views="tools">
+          <h2>进度报告</h2>
+          <div class="snapshot-controls">
+            <button id="exportMarkdown">导出 Markdown</button>
+            <button id="exportSvg">导出 SVG</button>
+            <button type="button" id="exportHtmlBtn">导出离线网页</button>
+            <button id="copySummary">复制摘要</button>
+            <button type="button" id="pushReportBtn">推送周报</button>
+          </div>
+          <div id="reportMessage" class="snapshot-result" role="status"></div>
+        </section>
+        <section class="card" id="snapshots-panel" data-views="tools"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
+        <section class="card" id="integrations" data-views="tools">
+          <div class="card-head"><h2>平台集成</h2><div class="snapshot-controls"><button type="button" id="configIntegrationBtn">配置平台</button><button type="button" id="issueSyncBtn">Issue 同步</button></div></div>
+          <div class="empty" id="issueStatus" role="status"></div>
+        </section>
       </div>
       </div>
     </main>

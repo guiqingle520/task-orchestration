@@ -750,6 +750,50 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 }
 .dashboard .task-dialog [role=status]:empty { display:none; }
 .dashboard .task-dialog [role=status]:not(:empty) { margin:10px 0 0; font-size:12px; }
+/* T-56: 侧栏真分页多视图架构与通栏全宽计划时间线 */
+.workspace-nav a[data-view="capacity"] { --nav-icon-color:#475e78; }
+.workspace-nav a[data-view="tools"] { --nav-icon-color:#7329a6; }
+.workspace-crumb #viewCrumb { color:var(--m); font-weight:500; }
+.overview-head-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.overview-cta {
+  display:inline-flex;
+  align-items:center;
+  min-height:32px;
+  padding:5px 12px;
+  border-radius:7px;
+  background:#18181b;
+  color:#fff;
+  font-size:12px;
+  font-weight:500;
+  text-decoration:none;
+  box-shadow:0 1px 2px rgba(0,0,0,.14);
+  transition:background-color .14s ease;
+}
+.overview-cta:hover { background:#2e2e33; }
+.dashboard .overview-head-actions .pill { margin-top:0; }
+.section-view-head { margin-bottom:18px; }
+.section-view-head h1 { font-size:28px; font-weight:720; line-height:1.25; margin:0; }
+.section-view-head p { margin:4px 0 0; color:var(--m); font-size:13px; }
+.dashboard-board {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:18px;
+  align-items:start;
+}
+.dashboard[data-view] .dashboard-board > [data-views] { display:none; }
+.dashboard[data-view="overview"] .dashboard-board > [data-views~="overview"] { display:block; }
+.dashboard[data-view="timeline"] .dashboard-board > [data-views~="timeline"] { display:block; grid-column:1 / -1; }
+.dashboard[data-view="delivery"] .dashboard-board > [data-views~="delivery"] { display:block; }
+.dashboard[data-view="capacity"] .dashboard-board > [data-views~="capacity"] { display:block; }
+.dashboard[data-view="tools"] .dashboard-board > [data-views~="tools"] { display:block; }
+.dashboard[data-view="tools"] #integrations { grid-column:1 / -1; }
+.dashboard:not([data-view="overview"]) #overview { display:none; }
+.dashboard[data-view="timeline"] #gantt { max-height:clamp(440px,64vh,760px); }
+.dashboard[data-view="timeline"] .gantt-card { padding:20px 22px; }
+.dashboard[data-view="overview"] #burndownCard .burndown-chart svg { max-height:220px; }
+@media(max-width:960px) {
+  .dashboard-board { grid-template-columns:minmax(0,1fr); }
+}
 
 @media(max-width:1220px) {
   .workspace-shell { grid-template-columns:180px minmax(0,1fr); }

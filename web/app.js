@@ -1090,32 +1090,91 @@ document.addEventListener('click', (e) => {
   }
   const el = e.target.closest('[data-id]');
   if (!el) return;
+  const fromSideList = Boolean(e.target.closest('#risks, #milestones, #capacityMetrics'));
   selected = selected === el.dataset.id ? null : el.dataset.id;
   // 选中的任务所在里程碑被折叠时自动展开
   const t = last?.data.tasks.find((x) => x.id === selected);
   if (t && !filterTasks([t], taskFilters).length) setTaskFilters();
   if (t && collapsed.has(t.milestone)) { collapsed.delete(t.milestone); saveCollapsed(); }
+  if (fromSideList && selected) ensureTimelineView();
   const focusList = e.target.closest('#milestones, #risks');
   renderAll(true);
-  [...(focusList?.querySelectorAll('button[data-id]') || [])].find((button) => button.dataset.id === el.dataset.id)?.focus({ preventScroll: true });
+  if (!fromSideList) {
+    [...(focusList?.querySelectorAll('button[data-id]') || [])].find((button) => button.dataset.id === el.dataset.id)?.focus({ preventScroll: true });
+  }
 });
+
+const VIEW_META = {
+  portfolio: { view: 'portfolio', title: '跨项目总览', desc: '' },
+  overview: { view: 'overview', title: '项目总览', desc: '' },
+  timeline: { view: 'timeline', title: '计划时间线', desc: '' },
+  delivery: { view: 'delivery', title: '里程碑与风险', desc: '追踪阶段交付进度、延期风险与 Webhook 预警推送。' },
+  capacity: { view: 'capacity', title: '负载与工时', desc: '查看成员每周并行峰值、工作日历配置与预估准确率。' },
+  tools: { view: 'tools', title: '报告与集成', desc: '导出周报与脱敏离线驾驶舱、管理快照并同步平台 Issue。' },
+};
+
+function resolveWorkspaceView(hash) {
+  switch (hash) {
+    case '#portfolio': return VIEW_META.portfolio;
+    case '#timeline':
+    case '#follow-up': return VIEW_META.timeline;
+    case '#deliveries':
+    case '#risk-panel': return VIEW_META.delivery;
+    case '#capacityCard':
+    case '#loadCard': return VIEW_META.capacity;
+    case '#reports':
+    case '#snapshots-panel':
+    case '#integrations': return VIEW_META.tools;
+    default: return VIEW_META.overview;
+  }
+}
+
+function ensureTimelineView() {
+  if (typeof location === 'undefined') return;
+  if (resolveWorkspaceView(location.hash).view === 'timeline') return;
+  const url = new URL(location.href);
+  url.hash = '#timeline';
+  history.pushState(null, '', url);
+  updateWorkspaceNav();
+}
 
 function updateWorkspaceNav() {
   if (typeof location === 'undefined') return;
-  const active = location.hash || '#overview';
+  const active = location.hash || (pendingTaskLink ? '#timeline' : '#overview');
+  const meta = resolveWorkspaceView(active);
   const wasPortfolio = portfolioActive;
-  portfolioActive = active === '#portfolio';
-  if (portfolioActive) void timelineView.close({ restore: false });
+  portfolioActive = meta.view === 'portfolio';
+  if (meta.view !== 'timeline') void timelineView.close({ restore: false });
   if (wasPortfolio && !portfolioActive) portfolio.cancel();
+  if (document.body?.dataset) document.body.dataset.view = meta.view;
   $('portfolio').hidden = $('portfolioCrumb').hidden = !portfolioActive;
   $('singleProjectView').hidden = $('project').hidden = $('plannerToggle').hidden = $('syncGit').hidden = portfolioActive;
+  if ($('viewCrumbSep')) $('viewCrumbSep').hidden = portfolioActive;
+  if ($('viewCrumb')) {
+    $('viewCrumb').hidden = portfolioActive;
+    $('viewCrumb').textContent = meta.title;
+  }
+  const sectionHead = $('sectionViewHead');
+  if (sectionHead) {
+    const showSectionHead = !portfolioActive && meta.view !== 'overview' && meta.view !== 'timeline';
+    sectionHead.hidden = !showSectionHead;
+    if (showSectionHead) {
+      $('sectionViewTitle').textContent = meta.title;
+      $('sectionViewDesc').textContent = meta.desc;
+    }
+  }
   $('updated').hidden = portfolioActive;
-  $('workspaceSkip').href = portfolioActive ? '#portfolio' : '#overview';
-  $('workspaceSkip').textContent = portfolioActive ? '跳到跨项目总览' : '跳到项目总览';
+  $('workspaceSkip').href = portfolioActive ? '#portfolio' : meta.view === 'timeline' ? '#timeline' : '#overview';
+  $('workspaceSkip').textContent = portfolioActive ? '跳到跨项目总览' : `跳到${meta.title}`;
   document.querySelectorAll('.workspace-nav a').forEach((link) => {
-    if (link.hash === active) link.setAttribute('aria-current', 'location');
+    if (link.dataset?.view === meta.view || link.hash === active) link.setAttribute('aria-current', 'location');
     else link.removeAttribute('aria-current');
   });
+  if (meta.view === 'timeline' && last && !planGesture) {
+    globalThis.requestAnimationFrame?.(() => {
+      if (last && !planGesture) renderGantt(last.data, last.m);
+    });
+  }
   return wasPortfolio !== portfolioActive;
 }
 
@@ -1254,6 +1313,7 @@ $('clearTaskFilters').addEventListener('click', () => {
 
 function revealTimelineItem(id) {
   if (!last) return;
+  ensureTimelineView();
   const task = last.data.tasks.find(task => task.id === id);
   const milestone = task?.milestone ?? id;
   collapsed.delete(milestone);
@@ -1700,12 +1760,14 @@ const m5Panels = installM5Panels({
 const portfolio = installPortfolio({ esc, syncProjects: syncProjectOptions });
 const timelineView = installTimelineView({ beforeOpen: closeSearchPicker });
 globalThis.addEventListener?.('hashchange', () => {
-  if (!updateWorkspaceNav()) return;
-  const target = $(portfolioActive ? 'portfolio' : (location.hash.slice(1) || 'overview'));
-  target?.scrollIntoView?.({ block: 'start' });
-  if (portfolioActive) target?.focus?.({ preventScroll: true });
-  else if (location.hash === '#deliveries') scrollToDeliveries = true;
-  void refresh();
+  const modeChanged = updateWorkspaceNav();
+  if (location.hash === '#follow-up') {
+    $('follow-up')?.scrollIntoView?.({ block: 'start' });
+  } else {
+    globalThis.scrollTo?.(0, 0);
+  }
+  if (portfolioActive) $('portfolio')?.focus?.({ preventScroll: true });
+  if (modeChanged) void refresh();
 });
 let resizeTimer = null;
 globalThis.addEventListener?.('resize', () => {

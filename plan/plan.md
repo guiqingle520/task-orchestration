@@ -628,6 +628,17 @@ tasks:
     progress: 100
     actualStart: 2026-11-19
     actualEnd: 2026-11-19
+  - id: T-56
+    title: 重构驾驶舱为侧栏真分页多视图架构与通栏全宽计划时间线
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-55]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
 ---
 
 # 计划说明
@@ -717,3 +728,5 @@ tasks:
 变更记录:2026-11-19 antigravity 完成 T-54；新增 server/folder-picker.mjs 与 POST /api/projects/pick-directory 接口，支持原生文件夹选择与项目名/代号自动预填，全量 53 项测试通过。
 变更记录:2026-11-19 规划者按用户反馈新增 M7 的 T-55，通过弹窗打开时预热与短时常驻 PowerShell STA 进程消除文件夹选择器冷启动卡顿。
 变更记录:2026-11-19 antigravity 完成 T-55；实现 Windows 常驻 STA 进程复用（3 分钟空闲自动回收、Base64 安全传输与打开弹窗后台预热），点击选择文件夹即时弹出。
+变更记录:2026-11-19 规划者按用户确认的布局方案新增 M7 的 T-56，重构驾驶舱为侧栏真分页多视图（跨项目总览/项目总览/计划时间线/里程碑与风险/负载与工时/报告与集成），并将计划时间线改为通栏全宽展示。
+变更记录:2026-11-19 antigravity 完成 T-56；重构为 6 视图真分页架构、2 列等宽平衡网格与通栏全宽时间线，兼容所有历史锚点与跨视图联动跳转，全量 53 项测试通过。
