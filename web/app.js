@@ -5,6 +5,7 @@ import { filterTasks, followUpTasks, milestoneDelay, normalizeQuery, readTaskLin
 import { closeSearchPicker, enhanceSearchPicker, syncSearchPicker } from './search-picker.js';
 import { installPortfolio } from './portfolio-panel.js';
 import { PROJECT_HEALTH_LABELS } from './portfolio.js';
+import { installTimelineView } from './timeline-view.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -129,9 +130,11 @@ $('simTask').addEventListener('change', () => { $('simDays').value = delays[$('s
 
 $('plannerMode').addEventListener('change', () => {
   plannerMode = Boolean($('plannerMode').checked);
+  $('timelineFocusPlanner').setAttribute?.('aria-pressed', String(plannerMode));
   if (!plannerMode) resetPlanGesture();
   renderAll(false);
 });
+$('timelineFocusPlanner').addEventListener('click', () => $('plannerMode').click());
 
 $('burndownScope').addEventListener('change', () => {
   if (last) renderBurndown(last.data, last.m);
@@ -303,7 +306,10 @@ document.addEventListener('pointercancel', (event) => {
   if (event.pointerId === planGesture?.pointerId) resetPlanGesture();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && planGesture) resetPlanGesture();
+  if (event.key === 'Escape' && planGesture) {
+    event.preventDefault();
+    resetPlanGesture();
+  }
   if (plannerMode && last && ['Enter', ' '].includes(event.key)) {
     const line = event.target.closest?.('[data-unlink-from]');
     if (line) {
@@ -583,7 +589,7 @@ function bindEventsStream() {
 
 function setPlanAvailable(available) {
   const isWritable = available && !isTimeMachine;
-  for (const id of ['plannerMode', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
+  for (const id of ['plannerMode', 'timelineFocusPlanner', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
     'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn']) {
     if ($(id)) $(id).disabled = !isWritable;
   }
@@ -1056,6 +1062,7 @@ function updateWorkspaceNav() {
   const active = location.hash || '#overview';
   const wasPortfolio = portfolioActive;
   portfolioActive = active === '#portfolio';
+  if (portfolioActive) void timelineView.close({ restore: false });
   if (wasPortfolio && !portfolioActive) portfolio.cancel();
   $('portfolio').hidden = $('portfolioCrumb').hidden = !portfolioActive;
   $('singleProjectView').hidden = $('project').hidden = $('plannerToggle').hidden = $('syncGit').hidden = portfolioActive;
@@ -1645,6 +1652,7 @@ const m5Panels = installM5Panels({
   },
 });
 const portfolio = installPortfolio({ esc, syncProjects: syncProjectOptions });
+const timelineView = installTimelineView({ beforeOpen: closeSearchPicker });
 globalThis.addEventListener?.('hashchange', () => {
   if (!updateWorkspaceNav()) return;
   const target = $(portfolioActive ? 'portfolio' : (location.hash.slice(1) || 'overview'));

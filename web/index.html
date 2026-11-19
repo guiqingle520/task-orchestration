@@ -66,20 +66,26 @@
         <section id="timeline" class="card gantt-card" aria-labelledby="timeline-title">
           <div class="timeline-heading">
             <div><h2 id="timeline-title">计划时间线</h2><p id="timelineRange"></p></div>
-            <div id="timelineActions" class="gctrl timeline-actions"></div>
-          </div>
-          <div class="timeline-key">
-            <div id="gctrl" class="gctrl"></div>
-            <div class="legend">
-              <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际</span>
-              <span><i class="sw ghost"></i>基线</span><span><i class="sw slip"></i>预计延期</span>
-              <span><i class="sw milestone"></i>里程碑</span><span><i class="sw crit"></i>关键路径</span>
-              <span><i class="sw today"></i>今天</span>
+            <div class="timeline-heading-actions">
+              <div id="timelineActions" class="gctrl timeline-actions"></div>
+              <button type="button" class="timeline-focus-planner" id="timelineFocusPlanner" aria-pressed="false" disabled>规划模式</button>
+              <button type="button" id="timelineDetailJump" class="timeline-detail-link">任务详情 ↓</button>
+              <button type="button" id="timelineToolsToggle" class="timeline-tools-toggle" aria-expanded="false" aria-controls="timelineTools">筛选与工具</button>
+              <div class="timeline-view-controls">
+                <button type="button" id="timelineFocusToggle" aria-expanded="false" aria-controls="timelineFocusScroll">展开时间线</button>
+                <details id="timelineViewMenu" class="timeline-view-menu">
+                  <summary id="timelineViewMenuButton" aria-label="更多显示选项" title="更多显示选项">▾</summary>
+                  <button id="timelineFullscreen" type="button">浏览器全屏</button>
+                </details>
+              </div>
             </div>
           </div>
-          <div id="timelineOptions" class="gctrl timeline-options"></div>
+          <div class="timeline-focus-scroll" id="timelineFocusScroll">
+          <div class="timeline-viewport">
+          <p class="timeline-view-status" id="timelineViewStatus" role="status"></p>
           <div id="timeMachineBar" class="time-machine-bar" hidden>
             <div class="tm-row">
+              <span class="timeline-history-label">历史回放 · 只读</span>
               <button type="button" id="tmPlayPause" class="btn-sm">▶ 播放</button>
               <label class="tm-slider-wrap">
                 <input type="range" id="tmSlider" min="0" max="0" value="0" aria-label="历史提交时间轴">
@@ -94,6 +100,17 @@
           </div>
           <div id="planGestureMessage" class="plan-gesture-message" role="status"></div>
           <div id="planDragTip" class="plan-drag-tip" hidden></div>
+          <div id="timelineTools">
+          <div class="timeline-key">
+            <div id="gctrl" class="gctrl"></div>
+            <div class="legend">
+              <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际</span>
+              <span><i class="sw ghost"></i>基线</span><span><i class="sw slip"></i>预计延期</span>
+              <span><i class="sw milestone"></i>里程碑</span><span><i class="sw crit"></i>关键路径</span>
+              <span><i class="sw today"></i>今天</span>
+            </div>
+          </div>
+          <div id="timelineOptions" class="gctrl timeline-options"></div>
           <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><div class="simulation-task"><label for="simTask">任务</label> <select id="simTask"></select></div><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
           <div id="simResult" class="sim-result" aria-live="polite"></div>
           <div class="task-filters" id="taskFilters" role="group" aria-label="筛选时间线和跟进任务" hidden>
@@ -103,12 +120,15 @@
             <div class="task-filter-field"><label for="filterMilestone">里程碑</label><select id="filterMilestone"><option value="">全部里程碑</option></select></div>
             <div class="task-filter-actions"><span id="filterCount" class="empty" role="status"></span><button type="button" id="clearTaskFilters">清空筛选</button><a href="#follow-up">查看日常跟进 ↓</a></div>
           </div>
+          </div>
           <div id="gantt"></div>
-          <div id="detail" class="detail"></div>
+          </div>
+          <div id="detail" class="detail" tabindex="-1"></div>
           <section id="follow-up" class="follow-up" aria-labelledby="follow-up-title" hidden>
             <div class="card-head"><h2 id="follow-up-title">日常跟进</h2><span class="empty">阻塞、逾期和 7 天内到期</span></div>
             <ul id="followUpTasks"></ul>
           </section>
+          </div>
         </section>
         <aside class="dashboard-side" aria-label="项目分析与操作">
           <section class="card">
