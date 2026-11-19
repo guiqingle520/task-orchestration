@@ -251,8 +251,8 @@
 <dialog id="projectDialog" class="task-dialog">
   <form id="projectForm">
     <h2>注册本地项目工作区</h2>
-    <label>项目代号 <input id="projIdInput" type="text" placeholder="英文/数字/连字符，如 payment-service" required></label>
-    <label>显示名称 <input id="projNameInput" type="text" placeholder="如 支付网关重构" required></label>
+    <label>项目代号 <input id="projIdInput" type="text" pattern="[a-zA-Z0-9_\-]{1,80}" maxlength="80" placeholder="默认取文件夹名，可自定义"></label>
+    <label>显示名称 <input id="projNameInput" type="text" maxlength="100" placeholder="默认取计划项目名，可自定义"></label>
     <div class="input-with-action">
       <label for="projRootInput">仓库绝对路径</label>
       <div class="input-action-row">
@@ -261,9 +261,12 @@
       </div>
     </div>
     <p id="projectMessage" role="status"></p>
+    <label id="projectPreview" hidden>默认计划预览
+      <textarea id="projectTemplate" rows="9" readonly></textarea>
+    </label>
     <div class="dialog-actions">
       <button type="button" id="closeProject">取消</button>
-      <button type="submit">注册并切换</button>
+      <button type="submit" id="registerProject">检查并注册</button>
     </div>
   </form>
 </dialog>

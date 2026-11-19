@@ -311,6 +311,12 @@ createServer((req, res) => {
       return json(res, 200, { default: registry.default, projects });
     } catch (err) { return json(res, 500, { message: err.message }); }
   }
+  if (url.pathname === '/api/projects/preflight' && req.method === 'POST') {
+    return withJsonBody(req, res, 16 * 1024, (input) => {
+      try { json(res, 200, workspaces.preflight(input)); }
+      catch (err) { json(res, 400, { message: err.message }); }
+    });
+  }
   if (url.pathname === '/api/projects' && req.method === 'POST') {
     return withJsonBody(req, res, 16 * 1024, (input) => {
       try { const added = workspaces.add(input); watchProject(added); json(res, 200, { ok: true, project: added }); }

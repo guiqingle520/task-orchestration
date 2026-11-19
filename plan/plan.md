@@ -671,10 +671,10 @@ tasks:
     start: 2026-12-23
     end: 2026-12-24
     deps: [T-54, T-57]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
   - id: T-60
     title: 实现零依赖 stdio MCP 服务（查询、校验与带并发冲突检查的进度写回）及双端智能体插件封装
     owner: antigravity
@@ -790,3 +790,5 @@ tasks:
 变更记录:2026-11-19 规划者汇总用户、Codex 与 Antigravity 共识，新增里程碑 M8 与任务 T-57 ~ T-60（共 4 项任务：T-57/T-59 由 codex 负责，T-58/T-60 由 antigravity 负责），并将四条验收细则写入计划说明。
 变更记录:2026-11-19 codex 开始 T-57，按既定验收标准提前开发，保留原计划日期。
 变更记录:2026-11-19 codex 完成 T-57。T-58 可从 web/task-handoff.js 引入 readyTasks(last.data.tasks, last.m.today)，先用完整任务列表判定，再按负责人筛选，availability 为 now 或 early，reason 为入选原因。总览与任务详情共用 buildTaskHandoff(last.data, taskId, last.acceptanceByTask) 生成纯文本预览及复制内容。实时与历史快照分别提供本版本的验收标准。
+变更记录:2026-11-19 codex 提前开始 T-59，保留原排期。
+变更记录:2026-11-19 codex 完成 T-59，已验证有效计划直接注册、缺失计划预览确认创建和错误计划原文件保护。浏览器验证覆盖取消预览及预览后其他进程创建计划的情况。

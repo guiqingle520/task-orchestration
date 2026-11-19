@@ -1,3 +1,4 @@
+import { bindProjectWizard } from './project-wizard.js';
 import { compute, previewPlanEdit, simulateDelays, toDay, fromDay } from './metrics.js';
 import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown, computeTimelineDiff } from './analysis.js';
 import { installM5Panels } from './m5-panels.js';
@@ -807,79 +808,12 @@ async function switchProject(projectId) {
 
 $('projectSelect').addEventListener('change', () => switchProject($('projectSelect').value));
 
-$('addProjectBtn').addEventListener('click', () => {
-  $('projIdInput').value = '';
-  $('projNameInput').value = '';
-  $('projRootInput').value = '';
-  $('projectMessage').textContent = '';
-  $('projectDialog').showModal?.();
-  void fetch('/api/projects/pick-directory', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ warmup: true }),
-  }).catch(() => {});
-});
-$('pickProjectDirBtn')?.addEventListener('click', async () => {
-  const btn = $('pickProjectDirBtn');
-  btn.disabled = true;
-  btn.textContent = '选择中…';
-  $('projectMessage').textContent = '';
-  try {
-    const response = await fetch('/api/projects/pick-directory', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ initialPath: $('projRootInput').value.trim() }),
-    });
-    if (response.status === 404) {
-      $('projectMessage').textContent = '当前服务不支持选择文件夹，请重启驾驶舱服务或手动输入路径';
-      return;
-    }
-    const result = await response.json();
-    if (!response.ok) {
-      $('projectMessage').textContent = result.message || '无法打开文件夹选择器';
-      return;
-    }
-    if (result.cancelled || !result.path) return;
-    $('projRootInput').value = result.path;
-    const folderName = result.path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || '';
-    if (folderName) {
-      if (!$('projNameInput').value.trim()) $('projNameInput').value = folderName;
-      if (!$('projIdInput').value.trim()) {
-        const slug = folderName.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
-        if (slug) $('projIdInput').value = slug;
-      }
-    }
-  } catch {
-    $('projectMessage').textContent = '无法连接服务，请手动输入路径';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '选择文件夹';
-  }
-});
-$('closeProject').addEventListener('click', () => $('projectDialog').close?.());
-$('projectForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    const response = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: $('projIdInput').value.trim(),
-        name: $('projNameInput').value.trim(),
-        repoRoot: $('projRootInput').value.trim(),
-      }),
-    });
-    const result = await response.json();
-    if (!response.ok) { $('projectMessage').textContent = result.message || '注册失败'; return; }
-    $('projectDialog').close?.();
-    const select = $('projectSelect');
-    if (![...select.options].some(({ value }) => value === result.project.id)) {
-      select.add(new Option(result.project.name, result.project.id));
-    }
-    select.value = result.project.id;
-    void refreshProjects();
-    await switchProject(result.project.id);
-  } catch { $('projectMessage').textContent = '无法连接服务'; }
+bindProjectWizard($, async (project) => {
+  const select = $('projectSelect');
+  if (![...select.options].some(({ value }) => value === project.id)) select.add(new Option(project.name, project.id));
+  select.value = project.id;
+  void refreshProjects();
+  await switchProject(project.id);
 });
 
 // Webhook 预警渠道配置与一键推送 (T-24)
