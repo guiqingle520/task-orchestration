@@ -262,7 +262,7 @@ export function compute(data, todayStr) {
     const forecast = Math.max(due - 9999, ...ts.map((t) => info.get(t.id).forecastEnd));
     const total = ts.reduce((a, t) => a + info.get(t.id).dur, 0) || 1;
     const progress = ts.reduce((a, t) => a + (t.progress * info.get(t.id).dur) / 100, 0) / total * 100;
-    return { ...m, daysLeft: due - today, forecast: fromDay(forecast), slipDays: forecast - due, progress, taskCount: ts.length };
+    return { ...m, daysLeft: due - today, forecast: fromDay(forecast), slipDays: forecast - due, progress, taskCount: ts.length, doneCount: ts.filter((task) => task.status === 'done').length };
   });
 
   // 负载:每人每周(周一起算)未完成任务数

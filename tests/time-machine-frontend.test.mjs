@@ -105,8 +105,8 @@ test('T-29: Time machine playback, read-only controls, and baseline ghost bar ov
   await new Promise((r) => setTimeout(r, 20));
 
   // 1. 验证控制栏渲染了时间机器按钮与基线幽灵条选项
-  assert.match(elements.get('gctrl').innerHTML, /data-act="toggle-time-machine"/);
-  assert.match(elements.get('gctrl').innerHTML, /id="showBaselineGhost"/);
+  assert.match(elements.get('timelineActions').innerHTML, /data-act="toggle-time-machine"/);
+  assert.match(elements.get('timelineOptions').innerHTML, /id="showBaselineGhost"/);
 
   // 2. 点击「时间机器」按钮进入回放模式
   const click = (selector, target) => docListeners.click[0]({ target: { closest: (sel) => sel === selector ? target : null } });

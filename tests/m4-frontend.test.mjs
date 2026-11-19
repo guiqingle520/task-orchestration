@@ -102,7 +102,7 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
 
   // 1. T-18: 验证燃尽图 SVG 与里程碑筛选
   assert.match(elements.get('burndownChart').innerHTML, /<svg viewBox="0 0 320 148"/);
-  assert.match(elements.get('burndownSummary').innerHTML, /7日速率/);
+  assert.match(elements.get('burndownSummary').innerHTML, /7 日速率/);
   elements.get('burndownScope').value = 'M4';
   await elements.get('burndownScope').dispatch('change');
   assert.match(elements.get('burndownChart').innerHTML, /<polyline/);
@@ -110,7 +110,7 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
   // 2. T-20: 验证规划模式开启、新建任务按钮与计划条拖拽属性
   elements.get('plannerMode').checked = true;
   await elements.get('plannerMode').dispatch('change');
-  assert.match(elements.get('gctrl').innerHTML, /data-act="new-task"/);
+  assert.match(elements.get('timelineOptions').innerHTML, /data-act="new-task"/);
   assert.match(elements.get('gantt').innerHTML, /data-plan-drag="T-18"/);
 
   // 触发新建任务弹窗并提交保存
@@ -173,6 +173,14 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
 
   // 3. T-22: 验证多项目切换器加载与切换
   assert.match(elements.get('projectSelect').innerHTML, /支付网关/);
+  const overviewBeforeFilter = elements.get('kpis').innerHTML;
+  const milestonesBeforeFilter = elements.get('milestones').innerHTML;
+  elements.get('taskQuery').value = '燃尽';
+  await elements.get('taskQuery').dispatch('input');
+  assert.match(elements.get('gantt').innerHTML, /data-gantt-task="T-18"/);
+  assert.doesNotMatch(elements.get('gantt').innerHTML, /data-gantt-task="T-1"|marker-end="/);
+  assert.equal(elements.get('kpis').innerHTML, overviewBeforeFilter);
+  assert.equal(elements.get('milestones').innerHTML, milestonesBeforeFilter);
   let finishLoad;
   pendingSecond = new Promise((resolve) => { finishLoad = resolve; });
   elements.get('projectSelect').value = 'second';
@@ -180,6 +188,7 @@ test('M4 frontend renders burndown, planner mode, project switcher, and webhook 
   assert.ok(sseUrls.includes('/api/events?project=second'));
   assert.ok(calls.some((c) => c.url === '/api/plan?project=second'));
   assert.equal(elements.get('gantt').innerHTML, '');
+  assert.equal(elements.get('taskQuery').value, '');
   assert.equal(elements.get('taskDialog').open, false);
   assert.equal(elements.get('pushRisksBtn').disabled, true);
   const requestsDuringSwitch = calls.length;

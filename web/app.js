@@ -1,12 +1,20 @@
 import { compute, previewPlanEdit, simulateDelays, toDay, fromDay } from './metrics.js';
 import { analyzeLoad, buildReport, buildReportSvg, comparePlans, computeBurndown, computeTimelineDiff } from './analysis.js';
 import { installM5Panels } from './m5-panels.js';
+import { filterTasks, followUpTasks, milestoneDelay, normalizeQuery, readTaskLink, taskLinkUrl } from './m6.js';
+import { closeSearchPicker, enhanceSearchPicker, syncSearchPicker } from './search-picker.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const todayLocal = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-const RH = 60;
+const RH = 52;
 const STATUS = { todo: '未开始', doing: '进行中', done: '已完成', blocked: '阻塞' };
+const renderedMarkup = new WeakMap();
+function renderMarkup(el, markup) {
+  if (renderedMarkup.get(el) === markup) return;
+  el.innerHTML = markup;
+  renderedMarkup.set(el, markup);
+}
 
 let last = null;      // 最近一次 { data, revision, commits, m }
 let selected = null;  // 选中的任务或里程碑 id
@@ -20,11 +28,14 @@ let planGesture = null;
 let planConfirmation = null;
 let isCreatingTask = false;
 let plannerMode = false;
-let currentProjectId = '';
+let pendingTaskLink = readTaskLink(globalThis.location?.search ?? '');
+let currentProjectId = pendingTaskLink?.project || '';
 let defaultProjectId = 'default';
 let eventSource = null;
 let webhookChannelsDraft = [];
 let webhookProjects = [];
+const taskFilterFields = { query: 'taskQuery', status: 'filterStatus', owner: 'filterOwner', milestone: 'filterMilestone' };
+let taskFilters = {};
 
 // T-29: 时间机器与基线幽灵条状态
 let isTimeMachine = false;
@@ -87,6 +98,7 @@ $('saveSnapshot').addEventListener('click', () => {
     entries.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, label: new Date().toLocaleString(), plan: structuredClone(last.data) });
     localStorage.setItem(snapshotKey(), JSON.stringify(entries));
     updateSnapshots(); $('snapshots').value = entries.at(-1).id;
+    syncSearchPicker($('snapshots'));
     $('snapshotResult').textContent = '快照已保存';
   } catch { $('snapshotResult').textContent = '无法保存快照，请检查浏览器存储空间和权限'; }
 });
@@ -185,6 +197,7 @@ document.addEventListener('pointerdown', (event) => {
       const days = Math.max(0, Math.min(3650, original + Math.round((up.clientX - startX) / pxPerDay)));
       if (days) delays[id] = days; else delete delays[id];
       $('simTask').value = id; $('simDays').value = days;
+      syncSearchPicker($('simTask'));
       renderAll(false);
     };
     document.addEventListener('pointerup', finish, { once: true });
@@ -538,14 +551,17 @@ async function refreshProjects() {
     const res = await (await fetch('/api/projects')).json();
     if (sequence !== projectsSequence || !Array.isArray(res.projects)) return;
     defaultProjectId = res.default || 'default';
-    const dot = { green: '🟢', yellow: '🟡', red: '🔴', unavailable: '⚪' };
-    $('projectSelect').innerHTML = res.projects.map((p) => {
-      const pctText = typeof p.overall === 'number' ? `${Math.round(p.overall)}%` : '不可用';
-      return `<option value="${esc(p.id)}">${dot[p.health] || '⚪'} ${esc(p.name)} (${pctText})</option>`;
+    const health = { green: '正常', yellow: '有风险', red: '告急', unavailable: '不可用' };
+    const select = $('projectSelect');
+    const options = res.projects.map((p) => {
+      const progress = typeof p.overall === 'number' ? `${Math.round(p.overall)}%` : '';
+      const state = Object.hasOwn(health, p.health) ? p.health : 'unavailable';
+      const label = progress ? `${p.name} · ${progress}` : p.name;
+      return `<option value="${esc(p.id)}" data-health="${state}" data-label="${esc(label)}" data-search-label="${esc(p.name)}">${esc(label)} · ${health[state]}</option>`;
     }).join('');
-    if (res.projects.some((p) => p.id === selectedProjectId())) {
-      $('projectSelect').value = selectedProjectId();
-    }
+    if (select.innerHTML !== options) select.innerHTML = options;
+    select.value = selectedProjectId();
+    syncSearchPicker(select);
   } catch { /* 单项目回退 */ }
 }
 
@@ -579,12 +595,16 @@ function clearPlan() {
   selected = null;
   editingTask = taskEditBase = milestoneEditBase = null;
   for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog']) if ($(id)?.open) $(id).close();
-  for (const id of ['kpis', 'gctrl', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
-    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage']) {
-    if ($(id)) $(id).innerHTML = '';
+  for (const id of ['kpis', 'gctrl', 'timelineActions', 'timelineOptions', 'timelineRange', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
+    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks']) {
+    if ($(id)) {
+      $(id).innerHTML = '';
+      renderedMarkup.delete($(id));
+    }
   }
-  for (const id of ['project', 'pill']) if ($(id)) $(id).textContent = '';
+  for (const id of ['project', 'overviewProject', 'pill', 'riskCount']) if ($(id)) $(id).textContent = '';
   if ($('pill')) $('pill').className = 'pill';
+  $('taskFilters').hidden = $('follow-up').hidden = true;
   setPlanAvailable(false);
 }
 
@@ -740,8 +760,18 @@ function stopPlay() {
 }
 
 async function switchProject(projectId) {
+  closeSearchPicker();
+  pendingTaskLink = null;
+  showTaskLinkNotice('');
+  if (globalThis.location && readTaskLink(location.search)) {
+    const url = new URL(location.href);
+    url.searchParams.delete('project');
+    url.searchParams.delete('task');
+    history.replaceState(null, '', url);
+  }
   currentProjectId = projectId;
   workspaceEpoch++;
+  setTaskFilters();
   clearPlan();
   delays = {};
   $('simDays').value = 0;
@@ -931,6 +961,21 @@ $('syncGit')?.addEventListener('click', async () => {
 
 // 点击联动:风险项 / 甘特行 / 条带 / 里程碑 都带 data-id,再次点击取消选中
 document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-copy-task-link]')) {
+    void copyTaskLink();
+    return;
+  }
+  const followUp = e.target.closest('[data-follow-task]');
+  if (followUp && last) {
+    revealTimelineItem(followUp.dataset.followTask);
+    return;
+  }
+  const stage = e.target.closest('[data-show-stage]');
+  if (stage && last) {
+    setTaskFilters({ milestone: stage.dataset.showStage });
+    revealTimelineItem(stage.dataset.showStage);
+    return;
+  }
   const link = e.target.closest('[data-unlink-from]');
   if (link && plannerMode && last) {
     openPlanConfirmation(last, { type: 'unlink', fromId: link.dataset.unlinkFrom, toId: link.dataset.unlinkTo });
@@ -983,9 +1028,23 @@ document.addEventListener('click', (e) => {
   selected = selected === el.dataset.id ? null : el.dataset.id;
   // 选中的任务所在里程碑被折叠时自动展开
   const t = last?.data.tasks.find((x) => x.id === selected);
+  if (t && !filterTasks([t], taskFilters).length) setTaskFilters();
   if (t && collapsed.has(t.milestone)) { collapsed.delete(t.milestone); saveCollapsed(); }
+  const focusList = e.target.closest('#milestones, #risks');
   renderAll(true);
+  [...(focusList?.querySelectorAll('button[data-id]') || [])].find((button) => button.dataset.id === el.dataset.id)?.focus({ preventScroll: true });
 });
+
+function updateWorkspaceNav() {
+  if (typeof location === 'undefined') return;
+  const active = location.hash || '#overview';
+  document.querySelectorAll('.workspace-nav a').forEach((link) => {
+    if (link.hash === active) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
+  });
+}
+globalThis.addEventListener?.('hashchange', updateWorkspaceNav);
+updateWorkspaceNav();
 
 async function refresh() {
   const sequence = ++refreshSequence;
@@ -993,7 +1052,11 @@ async function refresh() {
   let res;
   try { res = await (await fetch(apiUrl('/api/plan'))).json(); }
   catch {
-    if (sequence === refreshSequence) { $('updated').textContent = '无法连接服务'; showErrors(['无法连接服务']); }
+    if (sequence === refreshSequence) {
+      $('updated').textContent = '无法连接服务';
+      showErrors(['无法连接服务']);
+      if (pendingTaskLink) showTaskLinkNotice('暂时无法连接服务，任务链接将在连接恢复后重试。');
+    }
     return;
   }
   if (sequence !== refreshSequence) return;
@@ -1002,6 +1065,8 @@ async function refresh() {
     if (!isTimeMachine) {
       clearPlan();
       $('updated').textContent = '项目计划不可用';
+      if (pendingTaskLink) showTaskLinkNotice('无法打开任务链接：项目不存在或计划不可用。');
+      refreshProjects();
     }
     return;
   }
@@ -1014,7 +1079,15 @@ async function refresh() {
   setPlanAvailable(true);
   m5Panels.syncLive(last);
   $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
-  if (!planGesture) renderAll(false);
+  const linked = pendingTaskLink;
+  pendingTaskLink = null;
+  let revealed = false;
+  if (linked) {
+    if (!linked.project || linked.project !== last.projectId) showTaskLinkNotice('无法打开任务链接：项目不存在或未指定。');
+    else if (!last.data.tasks.some(({ id }) => id === linked.task)) showTaskLinkNotice(`无法打开任务链接：当前项目找不到任务 ${linked.task || '（未指定）'}。`);
+    else { showTaskLinkNotice(''); revealTimelineItem(linked.task); revealed = true; }
+  }
+  if (!planGesture && !revealed) renderAll(false);
   refreshProjects();
 }
 
@@ -1034,14 +1107,119 @@ function renderAll(scroll) {
   } else $('simResult').textContent = '';
   if (selected && !data.tasks.some((t) => t.id === selected) && !m.milestones.some((x) => x.id === selected)) selected = null;
   $('project').textContent = data.project;
+  $('overviewProject').textContent = data.project;
+  updateTaskFilters(data);
   renderKpis(data, m);
   renderGantt(data, m);
+  renderFollowUp(data, m);
   renderDetail(data, m);
   renderBurndown(data, m);
-  renderRisks(m);
+  renderRisks(data, m);
   renderMilestones(m);
   renderLoad(m);
-  if (scroll && selected) document.querySelector('.lrow.sel')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterOwner', 'filterMilestone']) syncSearchPicker($(id));
+  if (scroll && selected) document.querySelector('.lrow.sel, .lgroup.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+function setTaskFilters(filters = {}) {
+  taskFilters = filters;
+  for (const [key, id] of Object.entries(taskFilterFields)) {
+    $(id).value = filters[key] ?? '';
+    syncSearchPicker($(id));
+  }
+}
+
+function updateTaskFilters(data) {
+  $('taskFilters').hidden = $('follow-up').hidden = false;
+  const optionList = (key, entries, all) => {
+    const el = $(taskFilterFields[key]);
+    const chosen = taskFilters[key] ?? '';
+    const options = [['', all], ...entries];
+    if (chosen && !entries.some(([id]) => id === chosen)) options.push([chosen, `${chosen}（当前版本无此选项）`]);
+    const markup = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+    if (el.innerHTML !== markup) el.innerHTML = markup;
+    el.value = chosen;
+  };
+  const owners = [...new Set(data.tasks.map(task => task.owner))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  optionList('owner', owners.map(owner => [owner, owner]), '全部负责人');
+  optionList('milestone', data.milestones.map(({ id, name }) => [id, `${id} · ${name}`]), '全部里程碑');
+}
+
+function applyTaskFilters() {
+  if (!last || planGesture) return;
+  const { data, m } = last;
+  const task = data.tasks.find(item => item.id === selected);
+  if (task && !filterTasks([task], taskFilters).length) {
+    selected = null;
+    renderDetail(data, m);
+  }
+  renderGantt(data, m);
+  renderFollowUp(data, m);
+}
+
+for (const [key, id] of Object.entries(taskFilterFields)) {
+  $(id).addEventListener(key === 'query' ? 'input' : 'change', (event) => {
+    if (event.isComposing) return;
+    taskFilters[key] = $(id).value;
+    applyTaskFilters();
+  });
+}
+$('taskQuery').addEventListener('compositionend', () => {
+  taskFilters.query = $('taskQuery').value;
+  applyTaskFilters();
+});
+$('clearTaskFilters').addEventListener('click', () => {
+  setTaskFilters();
+  applyTaskFilters();
+  $('taskQuery').focus?.();
+});
+
+function revealTimelineItem(id) {
+  if (!last) return;
+  const task = last.data.tasks.find(task => task.id === id);
+  const milestone = task?.milestone ?? id;
+  collapsed.delete(milestone);
+  saveCollapsed();
+  selected = id;
+  renderAll(false);
+  const row = document.querySelector('.lrow.sel, .lgroup.sel');
+  row?.focus?.({ preventScroll: true });
+  row?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+}
+
+function showTaskLinkNotice(message) {
+  const notice = $('taskLinkNotice');
+  notice.textContent = message;
+  notice.hidden = !message;
+}
+
+async function copyTaskLink() {
+  if (!last || isTimeMachine || !last.data.tasks.some(task => task.id === selected)) return;
+  const url = taskLinkUrl(location.href, last.projectId, selected);
+  const message = $('taskCopyMessage');
+  try {
+    await navigator.clipboard.writeText(url);
+    message.textContent = '任务链接已复制。';
+  } catch {
+    const field = $('taskLinkFallback');
+    field.value = url;
+    field.hidden = false;
+    field.focus();
+    field.select();
+    message.textContent = '无法访问剪贴板，请手动复制链接。';
+  }
+}
+
+function renderFollowUp(data, m) {
+  const items = followUpTasks(filterTasks(data.tasks, taskFilters), m.today);
+  renderMarkup($('followUpTasks'), items.map(({ task, priority, days }) => {
+    const date = days < 0 ? `逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天后到期`;
+    const deadline = priority === 0 && days > 7 ? `计划截止 ${task.end}` : date;
+    return `<li><button type="button" class="follow-up-task" data-follow-task="${esc(task.id)}">
+      <span class="status-chip ${priority === 0 ? 'red' : 'yellow'}">${['阻塞', '逾期', '即将到期'][priority]}</span>
+      <span><strong>${esc(task.id)} · ${esc(task.title)}</strong><small>${esc(task.owner)} · ${esc(deadline)}</small></span>
+      <span aria-hidden="true">›</span></button></li>`;
+  }).join('') || '<li class="empty">当前条件下没有需要跟进的任务。</li>');
 }
 
 function showErrors(errs) {
@@ -1052,20 +1230,18 @@ function showErrors(errs) {
 
 function renderKpis(data, m) {
   const s = m.summary, nm = s.nextMilestone;
-  const label = { green: '正常', yellow: '有风险', red: '告急' }[s.health];
   $('pill').className = 'pill ' + s.health;
-  $('pill').textContent = label;
+  $('pill').textContent = { green: '正常', yellow: '有风险', red: '告急' }[s.health];
   const diff = Math.round(s.overall - s.expectedAll);
-  const dcls = diff < -20 ? 'red' : diff < -5 ? 'yellow' : 'green';
-  const kpi = (v, l, cls = '') => `<div class="kpi"><div class="v ${cls}">${v}</div><div class="l">${l}</div></div>`;
-  $('kpis').innerHTML =
-    `<div class="kpi main"><div class="v">${Math.round(s.overall)}% <span class="dev ${dcls}">${diff >= 0 ? '+' : ''}${diff}% vs 计划</span></div>
-      <div class="track"><i style="width:${s.overall}%"></i><b style="left:${s.expectedAll}%" title="计划应达 ${Math.round(s.expectedAll)}%"></b></div>
-      <div class="l">实际进度 · 黑线为计划应达 ${Math.round(s.expectedAll)}%</div></div>` +
-    kpi(nm ? `${nm.daysLeft} 天` : '—', nm ? `距里程碑「${esc(nm.name)}」` : '无未到期里程碑') +
-    kpi(s.overdueCount, '逾期任务', s.overdueCount ? 'red' : '') +
-    kpi(s.blockedCount, '阻塞任务', s.blockedCount ? 'red' : '') +
-    kpi(`${data.tasks.filter((t) => t.status === 'done').length}/${data.tasks.length}`, '已完成任务');
+  const dcls = diff < -20 ? 'red' : diff < -5 ? 'yellow' : '';
+  const done = data.tasks.filter((t) => t.status === 'done').length;
+  $('kpis').innerHTML = `
+    <div class="kpi main"><div class="l">总体进度</div>
+      <div class="kpi-progress"><div class="v">${Math.round(s.overall)}%</div><span class="dev ${dcls}">较计划 ${diff > 0 ? '+' : ''}${diff} 个百分点</span></div>
+      <div class="track" role="img" aria-label="总体进度 ${Math.round(s.overall)}%，计划应达 ${Math.round(s.expectedAll)}%"><i style="width:${s.overall}%"></i><b style="--expected:${s.expectedAll}%" title="计划应达 ${Math.round(s.expectedAll)}%"></b></div></div>
+    <div class="kpi"><div class="l">已完成任务</div><div class="v">${done} / ${data.tasks.length}</div><div class="l">共 ${data.tasks.length} 项任务</div></div>
+    <div class="kpi"><div class="l">逾期 / 阻塞</div><div class="v"><span class="${s.overdueCount ? 'yellow' : ''}">${s.overdueCount}</span> / <span class="${s.blockedCount ? 'red' : ''}">${s.blockedCount}</span></div><div class="l">${s.overdueCount || s.blockedCount ? '有任务需要跟进' : '暂无逾期或阻塞'}</div></div>
+    <div class="kpi"><div class="l">距下个里程碑</div><div class="v">${nm ? nm.daysLeft + ' 天' : '—'}</div><div class="l">${nm ? esc(nm.id + ' · ' + nm.name) : '无未到期里程碑'}</div></div>`;
 }
 
 // T-18: SVG 燃尽图与七日速率预测卡片
@@ -1092,12 +1268,12 @@ function renderBurndown(data, m) {
   const slipTxt = bd.slipDays === null
     ? '速率待形成'
     : bd.slipDays > 0
-      ? `<span class="red">预计晚 ${bd.slipDays} 天 (${bd.forecastEnd})</span>`
+      ? `<span class="yellow">预计晚 ${bd.slipDays} 天 (${bd.forecastEnd})</span>`
       : bd.slipDays < 0
         ? `<span class="green">预计早 ${-bd.slipDays} 天 (${bd.forecastEnd})</span>`
         : `<span class="green">预计按期 (${bd.forecastEnd})</span>`;
   $('burndownSummary').innerHTML =
-    `剩余 <b>${rem}</b> / ${bd.totalScope} 人日 · 7日速率 <b>${bd.velocity}</b> 人日/天 · ${slipTxt}`;
+    `<div class="burndown-value"><strong>${rem}</strong> 人日剩余</div><div>共 ${bd.totalScope} 人日 · 7 日速率 ${bd.velocity} 人日/天 · ${slipTxt}</div>`;
 
   const W = 320, H = 148, padL = 28, padR = 12, padT = 12, padB = 22;
   const plotW = W - padL - padR, plotH = H - padT - padB;
@@ -1113,34 +1289,29 @@ function renderBurndown(data, m) {
   const idealPts = bd.series.map((pt) => `${xOf(toDay(pt.date)).toFixed(1)},${yOf(pt.ideal).toFixed(1)}`).join(' ');
   const actualSeries = bd.series.filter((pt) => pt.actual !== null);
   const actualPts = actualSeries.map((pt) => `${xOf(toDay(pt.date)).toFixed(1)},${yOf(pt.actual).toFixed(1)}`).join(' ');
-  const areaPts = actualSeries.length
-    ? `${xOf(toDay(actualSeries[0].date)).toFixed(1)},${(padT + plotH).toFixed(1)} ${actualPts} ${xOf(toDay(actualSeries.at(-1).date)).toFixed(1)},${(padT + plotH).toFixed(1)}`
-    : '';
-
   let forecastLine = '';
   if (bd.forecastEnd && bd.remainingScope > 0 && actualSeries.length) {
     const lastPt = actualSeries.at(-1);
     const fx1 = xOf(toDay(lastPt.date)), fy1 = yOf(lastPt.actual);
     const fx2 = xOf(Math.min(maxDay, forecastDay)), fy2 = yOf(0);
-    const fColor = bd.slipDays > 0 ? '#dc2626' : '#16a34a';
+    const fColor = bd.slipDays > 0 ? 'var(--y)' : 'var(--acc)';
     forecastLine = `<line x1="${fx1.toFixed(1)}" y1="${fy1.toFixed(1)}" x2="${fx2.toFixed(1)}" y2="${fy2.toFixed(1)}" stroke="${fColor}" stroke-width="1.5" stroke-dasharray="3 3"/>`;
   }
 
   const dueX = xOf(endDay);
   const todayX = xOf(toDay(m.today));
   $('burndownChart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="燃尽图">
-    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + plotH}" stroke="#cbd5e1"/>
-    <line x1="${padL}" y1="${padT + plotH}" x2="${padL + plotW}" y2="${padT + plotH}" stroke="#cbd5e1"/>
-    <line x1="${padL}" y1="${yOf(maxScope / 2).toFixed(1)}" x2="${padL + plotW}" y2="${yOf(maxScope / 2).toFixed(1)}" stroke="#f1f5f9"/>
-    <text x="4" y="${padT + 8}" font-size="9" fill="#64748b">${maxScope}</text>
-    <text x="4" y="${padT + plotH}" font-size="9" fill="#64748b">0</text>
-    <text x="${padL}" y="${H - 5}" font-size="9" fill="#64748b">${bd.startDate.slice(5)}</text>
-    <text x="${Math.min(W - 34, Math.max(padL + 36, dueX - 14)).toFixed(1)}" y="${H - 5}" font-size="9" fill="#7c3aed">${bd.endDate.slice(5)}</text>
-    <line x1="${dueX.toFixed(1)}" y1="${padT}" x2="${dueX.toFixed(1)}" y2="${padT + plotH}" stroke="#7c3aed" stroke-dasharray="3 2"/>
-    ${ todayX >= padL && todayX <= padL + plotW ? `<line x1="${todayX.toFixed(1)}" y1="${padT}" x2="${todayX.toFixed(1)}" y2="${padT + plotH}" stroke="#2563eb" stroke-opacity="0.4"/>` : '' }
-    <polyline fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3" points="${idealPts}"/>
-    ${ areaPts ? `<polygon fill="rgba(37,99,235,0.10)" points="${areaPts}"/>` : '' }
-    ${ actualPts ? `<polyline fill="none" stroke="#2563eb" stroke-width="2" points="${actualPts}"/>` : '' }
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + plotH}" stroke="var(--b)"/>
+    <line x1="${padL}" y1="${padT + plotH}" x2="${padL + plotW}" y2="${padT + plotH}" stroke="var(--b)"/>
+    <line x1="${padL}" y1="${yOf(maxScope / 2).toFixed(1)}" x2="${padL + plotW}" y2="${yOf(maxScope / 2).toFixed(1)}" stroke="var(--b)"/>
+    <text x="4" y="${padT + 8}" font-size="9" fill="var(--m)">${maxScope}</text>
+    <text x="4" y="${padT + plotH}" font-size="9" fill="var(--m)">0</text>
+    <text x="${padL}" y="${H - 5}" font-size="9" fill="var(--m)">${bd.startDate.slice(5)}</text>
+    <text x="${Math.min(W - 34, Math.max(padL + 36, dueX - 14)).toFixed(1)}" y="${H - 5}" font-size="9" fill="var(--ms)">${bd.endDate.slice(5)}</text>
+    <line x1="${dueX.toFixed(1)}" y1="${padT}" x2="${dueX.toFixed(1)}" y2="${padT + plotH}" stroke="var(--ms)" stroke-dasharray="3 2"/>
+    ${ todayX >= padL && todayX <= padL + plotW ? `<line x1="${todayX.toFixed(1)}" y1="${padT}" x2="${todayX.toFixed(1)}" y2="${padT + plotH}" stroke="var(--acc)" stroke-opacity="0.4"/>` : '' }
+    <polyline fill="none" stroke="var(--ms)" stroke-width="1.5" stroke-dasharray="4 3" points="${idealPts}"/>
+    ${ actualPts ? `<polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${actualPts}"/>` : '' }
     ${ forecastLine }
   </svg>`;
 }
@@ -1164,15 +1335,25 @@ function renderCtrl() {
       <span class="planner-legend">拖两端改期，拖右侧锚点到下游任务，点击连线解除依赖。规划允许同日交接；模拟按次日开工。</span>`
     : '';
   $('gctrl').innerHTML =
-    `<div class="seg">${Object.entries(SCALES).map(([k, v]) => `<button data-scale="${k}" class="${scale === k ? 'on' : ''}">${v}</button>`).join('')}</div>` +
-    `<button data-act="today">回到今天</button><button data-act="expand">全部展开</button><button data-act="collapse">全部折叠</button>` +
-    `<button type="button" data-act="toggle-time-machine" class="${isTimeMachine ? 'on' : ''}" title="基于 Git 历史切片回放计划演进">时间机器</button>` +
+    `<div class="seg" role="group" aria-label="时间线缩放">${Object.entries(SCALES).map(([k, v]) => `<button data-scale="${k}" class="${scale === k ? 'on' : ''}" aria-pressed="${scale === k}">${v}</button>`).join('')}</div>`;
+  $('timelineActions').innerHTML =
+    `<button data-act="today">回到今天</button><button type="button" data-act="toggle-time-machine" class="${isTimeMachine ? 'on' : ''}" aria-pressed="${isTimeMachine}" title="基于 Git 历史切片回放计划演进">时间机器</button>`;
+  $('timelineOptions').innerHTML =
+    `<button data-act="expand">全部展开</button><button data-act="collapse">全部折叠</button>` +
     `<label class="ghost-toggle" title="在甘特图上叠加历史基线幽灵条对比排期演变"><input type="checkbox" id="showBaselineGhost" ${showBaselineGhost ? 'checked' : ''}> 叠加基线幽灵条</label>` +
     plannerBtns;
 }
 
 function renderGantt(data, m) {
   renderCtrl();
+  const filtering = Boolean(normalizeQuery(taskFilters.query) || taskFilters.status || taskFilters.owner || taskFilters.milestone);
+  const visibleTasks = filterTasks(data.tasks, taskFilters);
+  $('filterCount').textContent = `${visibleTasks.length} / ${data.tasks.length} 项任务`;
+  if (filtering && !visibleTasks.length) {
+    $('timelineRange').textContent = '';
+    $('gantt').innerHTML = '<p class="gantt-empty">没有匹配的任务。请调整条件或点击「清空筛选」。</p>';
+    return;
+  }
   let timelineDiff = null;
   if (showBaselineGhost) {
     const basePlan = isTimeMachine ? (baselinePlanData || liveBackup?.data) : baselinePlanData;
@@ -1191,11 +1372,13 @@ function renderGantt(data, m) {
   const days = [...data.tasks.flatMap((t) => [I[t.id].s, I[t.id].e + 1, I[t.id].forecastEnd + 1, ...(simulationResult ? [toDay(simulationResult.tasks[t.id].end) + 1] : [])]), toDay(m.today), ...m.milestones.map((x) => toDay(x.due) + 1), ...ghostDays];
   const min = Math.min(...days) - 1, max = Math.max(...days) + 1, n = max - min;
   const pct = (d) => ((d - min) / n) * 100;
+  $('timelineRange').textContent = `${fromDay(min + 1)} 至 ${fromDay(max - 1)}`;
   const fit = scale === 'fit';
   const innerW = fit ? null : n * PX[scale];
 
   // 行布局:里程碑分组行 + (未折叠时)任务行
-  const groups = m.milestones.map((ms) => ({ ms, tasks: data.tasks.filter((t) => t.milestone === ms.id) }));
+  const groups = m.milestones.map((ms) => ({ ms, tasks: visibleTasks.filter((t) => t.milestone === ms.id) }))
+    .filter(group => !filtering || group.tasks.length);
   const rows = [];
   let y = 0;
   for (const g of groups) {
@@ -1241,14 +1424,14 @@ function renderGantt(data, m) {
   const left = rows.map((r) => {
     if (r.type === 'g') {
       const ms = r.g.ms;
-      return `<div class="lgroup" data-toggle="${esc(ms.id)}" title="点击${r.isC ? '展开' : '折叠'}">
+      return `<div class="lgroup ${selected === ms.id ? 'sel' : ''}" tabindex="-1" data-toggle="${esc(ms.id)}" title="点击${r.isC ? '展开' : '折叠'}">
         <span class="car">${r.isC ? '▸' : '▾'}</span><b>${esc(ms.name)}</b>
-        <span class="gmeta">${r.g.tasks.length} 个任务 · ${Math.round(ms.progress)}%${ms.slipDays > 0 ? ` · <span class="red">延期 ${ms.slipDays} 天</span>` : ''}</span></div>`;
+        <span class="gmeta">${filtering ? `${r.g.tasks.length}/${ms.taskCount}` : ms.taskCount} 个任务 · ${Math.round(ms.progress)}%</span>${delayBadge(ms)}</div>`;
     }
     const t = r.t, i = I[t.id];
-    return `<div class="lrow ${selected === t.id ? 'sel' : ''}" data-id="${esc(t.id)}" title="${esc(t.title)}">
-      <div class="t"><span class="id ${i.critical ? 'crit' : ''}">${i.critical ? '★' : ''}${esc(t.id)}</span><span class="title">${esc(t.title)}</span></div>
-      <div class="s"><span>${esc(t.owner)}</span><span class="pbar"><i style="width:${t.progress}%"></i></span><span>${t.progress}%</span></div></div>`;
+    return `<div class="lrow ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" title="${esc(t.title)}">
+      <div class="t"><span class="title">${esc(t.title)}</span></div>
+      <div class="s"><span class="id ${i.critical ? 'crit' : ''}" title="${i.critical ? '关键路径' : ''}">${i.critical ? '★ ' : ''}${esc(t.id)}</span><span class="task-owner" title="${esc(t.owner)}">${esc(t.owner)}</span><span class="task-status ${t.status === 'blocked' ? 'red' : i.overdue ? 'yellow' : ''}">${t.status !== 'blocked' && i.overdue ? '逾期' : STATUS[t.status]} · ${t.progress}%</span></div></div>`;
   }).join('');
 
   // 时间线:条带与柱
@@ -1261,7 +1444,7 @@ function renderGantt(data, m) {
         const s = Math.min(...g.tasks.map((t) => I[t.id].s));
         const e = Math.max(...g.tasks.map((t) => I[t.id].e)) + 1;
         const fe = Math.max(...g.tasks.map((t) => I[t.id].forecastEnd)) + 1;
-        const cls = ms.slipDays > 0 ? 'red' : 'green';
+        const cls = milestoneDelay(ms) ? 'red' : 'green';
         bars += `<div class="bar gsum ${cls}" style="left:${pct(s)}%;width:${((e - s) / n) * 100}%;top:${r.y + 12}px" title="${esc(ms.name)} ${fromDay(s)} ~ ${fromDay(e - 1)},进度 ${Math.round(ms.progress)}%"><i style="width:${Math.round(ms.progress)}%"></i></div>`;
         if (fe > e) bars += `<div class="bar slip" style="left:${pct(e)}%;width:${((fe - e) / n) * 100}%;top:${r.y + 12}px" title="预计延期 ${fe - e} 天"></div>`;
       }
@@ -1297,7 +1480,7 @@ function renderGantt(data, m) {
       bars += `<div class="bar slip" style="left:${pct(i.e + 1)}%;width:${(i.slip / n) * 100}%;top:${r.y + 10}px" title="预计延期 ${i.slip} 天"></div>`;
     if (simulationResult) {
       const sim = simulationResult.tasks[t.id], ss = toDay(sim.start), se = toDay(sim.end);
-      bars += `<div class="bar simulation ${sim.critical ? 'critical' : ''}" data-sim-drag="${esc(t.id)}" data-days="${n}" style="left:${pct(ss)}%;width:${((se - ss + 1) / n) * 100}%;top:${r.y + 43}px" title="拖动模拟延期：${sim.start} ~ ${sim.end}，延期 ${sim.delayDays} 天"></div>`;
+      bars += `<div class="bar simulation ${sim.critical ? 'critical' : ''}" data-sim-drag="${esc(t.id)}" data-days="${n}" style="left:${pct(ss)}%;width:${((se - ss + 1) / n) * 100}%;top:${r.y + 39}px" title="拖动模拟延期：${sim.start} ~ ${sim.end}，延期 ${sim.delayDays} 天"></div>`;
     }
   }
 
@@ -1315,13 +1498,15 @@ function renderGantt(data, m) {
     if (plannerMode && !isTimeMachine) paths += `<path class="dep-hit" d="${curve}" data-unlink-from="${esc(d)}" data-unlink-to="${esc(t.id)}" tabindex="0" role="button" aria-label="解除 ${esc(d)} 到 ${esc(t.id)} 的依赖"><title>解除 ${esc(d)} → ${esc(t.id)} 的依赖</title></path>`;
   }
 
-  const msl = m.milestones.map((x) => `<div class="msline ${selected === x.id ? 'sel' : ''}" style="left:${pct(toDay(x.due) + 1)}%"><em>◆ ${esc(x.name)}</em></div>`).join('');
-  const today = `<div class="todayline" style="left:${pct(toDay(m.today))}%"><em>今天</em></div>`;
+  const msl = groups.map(({ ms: x }) => `<div class="msline ${selected === x.id ? 'sel' : ''}" style="left:${pct(toDay(x.due) + 1)}%"><em>◆ ${esc(x.name)}</em></div>`).join('');
+  const todayX = pct(toDay(m.today));
+  const today = `<div class="todayline" style="left:${todayX}%"></div>`;
+  const todayLabel = `<b class="today-label" style="left:clamp(20px, ${todayX}%, 100% - 20px)">今天</b>`;
 
   const prevScroll = $('tscroll')?.scrollLeft || 0;
-  $('gantt').innerHTML = `<div class="gwrap"><div><div class="lhead">里程碑 / 任务 / 进度</div>${left}</div>
+  $('gantt').innerHTML = `<div class="gwrap"><div><div class="lhead">任务与状态</div>${left}</div>
     <div class="tscroll" id="tscroll"><div class="tinner" style="${fit ? 'width:100%' : `width:${innerW}px;min-width:100%`}">
-    <div class="thead">${ticks}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
+    <div class="thead">${ticks}${todayLabel}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
     <svg class="deps" viewBox="0 0 100 ${H}" preserveAspectRatio="none">
       <defs>${['depArrow', 'depArrowCritical'].map((id) => `<marker id="${id}" markerUnits="userSpaceOnUse" markerWidth=".8" markerHeight="7" viewBox="0 0 8 8" preserveAspectRatio="none" refX="8" refY="4" orient="auto"><polygon points="0,0 8,4 0,8"/></marker>`).join('')}</defs>
       ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div></div></div>`;
@@ -1341,29 +1526,55 @@ function renderDetail(data, m) {
   if (t) {
     const i = m.info[t.id];
     const cmts = (last.commits?.[t.id] || []).slice(-3).map((c) => `<code>${esc(c.hash)}</code> ${esc(c.subject)}(${esc(c.date)})`).join(' · ');
-    const editBtn = isTimeMachine ? '' : `<br><button type="button" data-edit-task>${plannerMode ? '规划/拆分任务' : '编辑任务'}</button> ${m5Panels.issueMarkup(t.id)}`;
-    el.innerHTML = `<b>${esc(t.id)} ${esc(t.title)}</b> · ${STATUS[t.status]} · 负责人 ${esc(t.owner)}<br>
+    const editBtn = isTimeMachine ? '' : `<br><button type="button" data-edit-task>${plannerMode ? '规划/拆分任务' : '编辑任务'}</button> ${m5Panels.issueMarkup(t.id)}
+      <button type="button" data-copy-task-link>复制任务链接</button> <span id="taskCopyMessage" role="status"></span>
+      <input type="url" id="taskLinkFallback" class="task-link-fallback" aria-label="任务链接" readonly hidden>`;
+    renderMarkup(el, `<span class="detail-label">当前任务</span><b>${esc(t.id)} ${esc(t.title)}</b> · ${STATUS[t.status]} · 负责人 ${esc(t.owner)}<br>
       计划 ${t.start} ~ ${t.end}(应达 ${Math.round(i.expected)}%),实际 ${t.actualStart || '—'} ~ ${t.actualEnd || '—'}(完成 ${t.progress}%)<br>
-      依赖:${t.deps.length ? t.deps.join(', ') : '无'}${i.slip > 0 && t.status !== 'done' ? ` · <span class="red">预计延期 ${i.slip} 天(预计 ${fromDay(i.forecastEnd)} 完成)</span>` : ''}${i.critical ? ' · <span class="red">关键路径</span>' : ''}${cmts ? `<br>关联提交:${cmts}` : ''}${editBtn}`;
+      依赖:${t.deps.length ? t.deps.join(', ') : '无'}${i.slip > 0 && t.status !== 'done' ? ` · <span class="red">预计延期 ${i.slip} 天(预计 ${fromDay(i.forecastEnd)} 完成)</span>` : ''}${i.critical ? ' · <span class="red">关键路径</span>' : ''}${cmts ? `<br>关联提交:${cmts}` : ''}${editBtn}`);
     return;
   }
   const ms = m.milestones.find((x) => x.id === selected);
-  el.innerHTML = ms
-    ? `<b>◆ ${esc(ms.name)}</b> · 目标 ${ms.due} · 预计 ${ms.forecast} 完成 · 包含 ${ms.taskCount} 个任务`
-    : '<span>提示:点击右侧风险项、左侧任务行或里程碑,可在时间线中高亮并查看详情。</span>';
+  renderMarkup(el, ms
+    ? `<b>${esc(ms.name)}</b> · 计划交付 ${ms.due} · 完成 ${ms.doneCount}/${ms.taskCount} 项 ${delayBadge(ms)}`
+    : '<span>选择任务、里程碑或风险，即可在此查看详情。</span>');
 }
 
-function renderRisks(m) {
+function renderRisks(data, m) {
+  const tasks = new Map(data.tasks.map((task) => [task.id, task]));
+  $('riskCount').textContent = `${m.risks.length} 项`;
   $('risks').innerHTML = m.risks.length
-    ? m.risks.map((r) => `<li class="${r.level} ${selected === r.id ? 'sel' : ''}" data-id="${esc(r.id)}"><b>${esc(r.id)}</b>${esc(r.text)}</li>`).join('')
-    : '<li class="empty" style="cursor:default;border-color:var(--g)">暂无风险 🎉</li>';
+    ? m.risks.map((r) => {
+      const task = tasks.get(r.id);
+      const [label, tone] = task?.status === 'blocked' ? ['阻塞', 'red'] : m.info[r.id]?.overdue ? ['逾期', 'yellow'] : ['延期风险', 'yellow'];
+      const title = task?.title || m.milestones.find((ms) => ms.id === r.id)?.name || r.id;
+      const prefix = task ? title : `里程碑 ${title}`;
+      const reason = r.text.startsWith(prefix) ? r.text.slice(prefix.length).trim() : r.text;
+      return `<li><button type="button" class="risk-item ${selected === r.id ? 'sel' : ''}" data-id="${esc(r.id)}" aria-pressed="${selected === r.id}">
+        <span class="status-chip ${tone}">${label}</span><span><strong>${esc(title)}</strong><small>${esc(r.id)} · ${esc(reason)}</small></span><span aria-hidden="true">›</span></button></li>`;
+    }).join('')
+    : '<li class="empty">暂无需要关注的风险</li>';
+}
+
+function delayBadge(ms) {
+  const delay = milestoneDelay(ms);
+  return delay ? `<span class="status-chip red milestone-delay">${delay.label} ${delay.days} 天</span>` : '';
 }
 
 function renderMilestones(m) {
-  $('milestones').innerHTML = m.milestones.map((x) => `<div class="ms ${selected === x.id ? 'sel' : ''}" data-id="${esc(x.id)}">
-    <div><b>${esc(x.name)}</b> <span class="empty">${x.due}(${x.daysLeft >= 0 ? `还剩 ${x.daysLeft} 天` : `已过 ${-x.daysLeft} 天`})</span></div>
-    <div class="bar2"><i style="width:${Math.round(x.progress)}%"></i></div>
-    <div class="${x.slipDays > 0 ? 'red' : 'green'}">${x.slipDays > 0 ? `预计 ${x.forecast} 完成,延期 ${x.slipDays} 天` : '按期可完成'} · 进度 ${Math.round(x.progress)}%</div></div>`).join('');
+  renderMarkup($('milestones'), m.milestones.map((ms) => {
+    const progress = Math.round(ms.progress);
+    const subtitle = ms.taskCount ? `${progress}% · 已完成 ${ms.doneCount}/${ms.taskCount} 项` : '暂无任务 · 0/0 项';
+    const delay = milestoneDelay(ms);
+    return `<article class="stage-progress">
+      <div class="stage-heading"><span class="ms-id">${esc(ms.id)}</span><strong>${esc(ms.name)}</strong>${delayBadge(ms)}</div>
+      ${ms.taskCount ? `<progress value="${ms.progress}" max="100" aria-label="${esc(ms.name)}完成进度"></progress>` : ''}
+      <div class="stage-summary"><span>${subtitle}</span><span>计划 <time datetime="${ms.due}">${ms.due}</time></span>
+        ${delay?.label === '预计延期' ? `<span>预计 <time datetime="${ms.forecast}">${ms.forecast}</time></span>` : ''}
+      </div>
+      ${ms.taskCount ? `<button type="button" class="btn-sm stage-jump" data-show-stage="${esc(ms.id)}" aria-label="查看${esc(ms.name)}的甘特任务">查看阶段任务</button>` : ''}
+    </article>`;
+  }).join('') || '<p class="empty">暂无里程碑</p>');
 }
 
 function renderLoad(m) {
@@ -1405,6 +1616,10 @@ const m5Panels = installM5Panels({
     if ($('taskDialog')?.open && $('taskIssue') && editingTask && !isCreatingTask) $('taskIssue').innerHTML = m5Panels.issueMarkup(editingTask.id);
   },
 });
+for (const [id, label] of Object.entries({
+  projectSelect: '工作区项目', simTask: '模拟任务', burndownScope: '燃尽图里程碑', snapshots: '历史快照',
+  planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterOwner: '负责人', filterMilestone: '里程碑',
+})) enhanceSearchPicker($(id), label);
 setPlanAvailable(false);
 refresh();
 refreshProjects();

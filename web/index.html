@@ -6,104 +6,146 @@
 <title>任务时间线驾驶舱</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<header class="top">
-  <div class="brand">
-    <h1>任务时间线驾驶舱</h1>
-    <span id="project" class="proj" hidden></span>
-    <select id="projectSelect" class="proj-select" aria-label="选择工作区项目"></select>
-    <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 项目</button>
-    <span id="pill" class="pill"></span>
-  </div>
-  <div class="ctrl">
-    <label class="planner-toggle" title="开启后可新建/拆分任务、拖拽调整排期并记录变更原因"><input type="checkbox" id="plannerMode"> 规划模式</label>
-    <label>今天 <input type="date" id="today"></label>
-    <button id="reset" title="恢复为真实今天">重置</button>
-    <button id="syncGit" title="扫描 git commit 历史中的任务 ID 并同步进度">同步 Git</button>
-    <span class="live"><i></i><span id="updated">连接中…</span></span>
-  </div>
-</header>
-<div id="errors" class="errors" hidden></div>
-<div id="tmBanner" class="tm-banner" hidden>
-  <span>⏪ 正在以历史只读模式回放 Git 计划切片：<strong id="tmBannerCommit"></strong></span>
-  <button type="button" id="tmBannerExit" class="btn-sm">退出回放</button>
-</div>
-<section id="kpis" class="kpis"></section>
-<main>
-  <section class="card gantt-card">
-    <h2>时间线<small>计划 vs 实际</small></h2>
-    <div class="legend">
-      <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际(深色=完成度)</span>
-      <span><i class="sw ghost"></i>基线幽灵条</span>
-      <span><i class="sw slip"></i>预计延期</span><span><i class="sw crit">★</i>关键路径</span>
-      <span><i class="sw milestone"></i>里程碑</span><span><i class="sw today"></i>今天</span>
+<body class="dashboard">
+<a class="skip-link" href="#overview">跳到项目总览</a>
+<div class="workspace-shell">
+  <aside class="workspace-rail" aria-label="工作区侧栏">
+    <div class="workspace-brand"><span class="workspace-mark" aria-hidden="true"></span><div><strong>任务时间线驾驶舱</strong><small>项目调度台</small></div></div>
+    <div class="workspace-project">
+      <label for="projectSelect">当前项目</label>
+      <select id="projectSelect" class="proj-select" aria-label="选择工作区项目"></select>
+      <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 添加项目</button>
     </div>
-    <div id="gctrl" class="gctrl"></div>
-    <div id="timeMachineBar" class="time-machine-bar" hidden>
-      <div class="tm-row">
-        <button type="button" id="tmPlayPause" class="btn-sm">▶ 播放</button>
-        <label class="tm-slider-wrap">
-          <input type="range" id="tmSlider" min="0" max="0" value="0" aria-label="历史提交时间轴">
-        </label>
-        <select id="tmSpeed" class="btn-sm" aria-label="播放倍速">
-          <option value="1">1x</option>
-          <option value="2">2x</option>
-        </select>
-        <button type="button" id="tmExit" class="btn-sm">退出回放</button>
-      </div>
-      <div id="tmFrameInfo" class="tm-frame-info"></div>
-    </div>
-    <div id="planGestureMessage" class="plan-gesture-message" role="status"></div>
-    <div id="planDragTip" class="plan-drag-tip" hidden></div>
-    <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><label>任务 <select id="simTask"></select></label><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
-    <div id="simResult" class="sim-result" aria-live="polite"></div>
-    <div id="gantt"></div>
-    <div id="detail" class="detail"></div>
-  </section>
-  <aside>
-    <section class="card">
-      <div class="card-head">
-        <h2>燃尽图与速率<small>工期当量收敛</small></h2>
-        <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
-      </div>
-      <div id="burndownSummary" class="burndown-summary"></div>
-      <div id="burndownChart" class="burndown-chart"></div>
-    </section>
-    <section class="card">
-      <h2>进度报告</h2>
-      <div class="snapshot-controls">
-        <button id="exportMarkdown">导出 Markdown</button>
-        <button id="exportSvg">导出 SVG</button>
-        <button type="button" id="exportHtmlBtn">导出离线网页</button>
-        <button id="copySummary">复制摘要</button>
-        <button type="button" id="pushReportBtn">推送周报</button>
-      </div>
-      <div id="reportMessage" class="snapshot-result" role="status"></div>
-    </section>
-    <section class="card"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
-    <section class="card"><h2>里程碑</h2><div id="milestones"></div></section>
-    <section class="card">
-      <div class="card-head">
-        <h2>风险预警<small>点击定位任务</small></h2>
-        <div class="snapshot-controls">
-          <button type="button" id="pushRisksBtn">推送预警</button>
-          <button type="button" id="configWebhookBtn">配置渠道</button>
-        </div>
-      </div>
-      <div id="webhookStatus" class="snapshot-result" role="status"></div>
-      <ul id="risks" class="risks"></ul>
-    </section>
-    <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
-    <section class="card" id="capacityCard">
-      <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
-      <div id="capacityMetrics" aria-live="polite"></div>
-    </section>
-    <section class="card">
-      <div class="card-head"><h2>平台集成</h2><div class="snapshot-controls"><button type="button" id="configIntegrationBtn">配置平台</button><button type="button" id="issueSyncBtn">Issue 同步</button></div></div>
-      <div class="empty" id="issueStatus" role="status"></div>
-    </section>
+    <nav class="workspace-nav" aria-label="驾驶舱导航">
+      <div class="nav-label">驾驶舱</div>
+      <a href="#overview" aria-current="location"><span aria-hidden="true">⊞</span>项目总览</a>
+      <a href="#timeline"><span aria-hidden="true">≡</span>计划时间线</a>
+      <a href="#reports"><span aria-hidden="true">▤</span>进度报告</a>
+      <a href="#snapshots-panel"><span aria-hidden="true">◷</span>基线与快照</a>
+      <div class="nav-label">配置与连接</div>
+      <a href="#deliveries"><span aria-hidden="true">⚑</span>里程碑</a>
+      <a href="#risk-panel"><span aria-hidden="true">△</span>风险与预警</a>
+      <a href="#integrations"><span aria-hidden="true">↗</span>平台集成</a>
+    </nav>
+    <div class="workspace-foot"><span class="live"><i></i>本地工作区</span><span id="updated" role="status">连接中…</span></div>
   </aside>
-</main>
+  <div class="workspace-content">
+    <header class="top workspace-top">
+      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong></div>
+      <div class="ctrl">
+        <label class="date-control"><span>统计日</span><input type="date" id="today"></label>
+        <button id="reset" title="恢复为真实今天">重置</button>
+        <label class="planner-toggle" title="开启后可新建/拆分任务、拖拽调整排期并记录变更原因"><input type="checkbox" id="plannerMode"> 规划模式</label>
+        <button id="syncGit" title="扫描 git commit 历史中的任务 ID 并同步进度">同步 Git</button>
+      </div>
+    </header>
+    <main class="dashboard-main">
+      <div id="errors" class="errors" hidden></div>
+      <p id="taskLinkNotice" class="task-link-notice" role="status" hidden></p>
+      <div id="tmBanner" class="tm-banner" hidden>
+        <span>正在以历史只读模式回放 Git 计划切片：<strong id="tmBannerCommit"></strong></span>
+        <button type="button" id="tmBannerExit" class="btn-sm">退出回放</button>
+      </div>
+      <section id="overview" class="overview" aria-labelledby="overview-title">
+        <div class="overview-head"><div><h1 id="overview-title">项目总览</h1><p><span id="overviewProject"></span><span>迭代计划与交付进度</span></p></div><span id="pill" class="pill"></span></div>
+        <div id="kpis" class="kpis"></div>
+      </section>
+      <div class="dashboard-grid">
+        <section id="timeline" class="card gantt-card" aria-labelledby="timeline-title">
+          <div class="timeline-heading">
+            <div><h2 id="timeline-title">计划时间线</h2><p id="timelineRange"></p></div>
+            <div id="timelineActions" class="gctrl timeline-actions"></div>
+          </div>
+          <div class="timeline-key">
+            <div id="gctrl" class="gctrl"></div>
+            <div class="legend">
+              <span><i class="sw plan"></i>计划</span><span><i class="sw act"></i>实际</span>
+              <span><i class="sw ghost"></i>基线</span><span><i class="sw slip"></i>预计延期</span>
+              <span><i class="sw milestone"></i>里程碑</span><span><i class="sw crit"></i>关键路径</span>
+              <span><i class="sw today"></i>今天</span>
+            </div>
+          </div>
+          <div id="timelineOptions" class="gctrl timeline-options"></div>
+          <div id="timeMachineBar" class="time-machine-bar" hidden>
+            <div class="tm-row">
+              <button type="button" id="tmPlayPause" class="btn-sm">▶ 播放</button>
+              <label class="tm-slider-wrap">
+                <input type="range" id="tmSlider" min="0" max="0" value="0" aria-label="历史提交时间轴">
+              </label>
+              <select id="tmSpeed" class="btn-sm" aria-label="播放倍速">
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+              </select>
+              <button type="button" id="tmExit" class="btn-sm">退出回放</button>
+            </div>
+            <div id="tmFrameInfo" class="tm-frame-info"></div>
+          </div>
+          <div id="planGestureMessage" class="plan-gesture-message" role="status"></div>
+          <div id="planDragTip" class="plan-drag-tip" hidden></div>
+          <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><div class="simulation-task"><label for="simTask">任务</label> <select id="simTask"></select></div><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
+          <div id="simResult" class="sim-result" aria-live="polite"></div>
+          <div class="task-filters" id="taskFilters" role="group" aria-label="筛选时间线和跟进任务" hidden>
+            <div class="task-filter-field"><label for="taskQuery">搜索任务</label><input type="search" id="taskQuery" placeholder="输入任务编号或标题" autocomplete="off"></div>
+            <div class="task-filter-field"><label for="filterStatus">状态</label><select id="filterStatus"><option value="">全部状态</option><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></div>
+            <div class="task-filter-field"><label for="filterOwner">负责人</label><select id="filterOwner"><option value="">全部负责人</option></select></div>
+            <div class="task-filter-field"><label for="filterMilestone">里程碑</label><select id="filterMilestone"><option value="">全部里程碑</option></select></div>
+            <div class="task-filter-actions"><span id="filterCount" class="empty" role="status"></span><button type="button" id="clearTaskFilters">清空筛选</button><a href="#follow-up">查看日常跟进 ↓</a></div>
+          </div>
+          <div id="gantt"></div>
+          <div id="detail" class="detail"></div>
+          <section id="follow-up" class="follow-up" aria-labelledby="follow-up-title" hidden>
+            <div class="card-head"><h2 id="follow-up-title">日常跟进</h2><span class="empty">阻塞、逾期和 7 天内到期</span></div>
+            <ul id="followUpTasks"></ul>
+          </section>
+        </section>
+        <aside class="dashboard-side" aria-label="项目分析与操作">
+          <section class="card">
+            <div class="card-head">
+              <h2>燃尽趋势</h2>
+              <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
+            </div>
+            <div id="burndownSummary" class="burndown-summary"></div>
+            <div id="burndownChart" class="burndown-chart"></div>
+            <div class="legend chart-key"><span><i class="sw act"></i>实际</span><span><i class="sw ghost"></i>计划</span></div>
+          </section>
+          <section class="card" id="deliveries"><div class="card-head"><h2>里程碑进度</h2><span class="empty">所有阶段</span></div><div id="milestones"></div></section>
+          <section class="card" id="risk-panel">
+            <div class="card-head">
+              <h2>需要关注</h2><span id="riskCount" class="empty"></span>
+            </div>
+            <ul id="risks" class="risks"></ul>
+            <div class="snapshot-controls card-actions">
+                <button type="button" id="pushRisksBtn">推送预警</button>
+                <button type="button" id="configWebhookBtn">配置渠道</button>
+            </div>
+            <div id="webhookStatus" class="snapshot-result" role="status"></div>
+          </section>
+          <section class="card" id="reports">
+            <h2>进度报告</h2>
+            <div class="snapshot-controls">
+              <button id="exportMarkdown">导出 Markdown</button>
+              <button id="exportSvg">导出 SVG</button>
+              <button type="button" id="exportHtmlBtn">导出离线网页</button>
+              <button id="copySummary">复制摘要</button>
+              <button type="button" id="pushReportBtn">推送周报</button>
+            </div>
+            <div id="reportMessage" class="snapshot-result" role="status"></div>
+          </section>
+          <section class="card" id="snapshots-panel"><h2>基线与历史快照</h2><p class="empty">快照保存在当前浏览器，可与当前计划对比。</p><div class="snapshot-controls"><button id="saveSnapshot">保存当前快照</button><select id="snapshots" aria-label="选择历史快照"></select><button id="compareSnapshot">对比</button></div><div id="snapshotResult" class="snapshot-result" aria-live="polite"></div></section>
+          <section class="card"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
+          <section class="card" id="capacityCard">
+            <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
+            <div id="capacityMetrics" aria-live="polite"></div>
+          </section>
+          <section class="card" id="integrations">
+            <div class="card-head"><h2>平台集成</h2><div class="snapshot-controls"><button type="button" id="configIntegrationBtn">配置平台</button><button type="button" id="issueSyncBtn">Issue 同步</button></div></div>
+            <div class="empty" id="issueStatus" role="status"></div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+</div>
 
 <dialog id="taskDialog" class="task-dialog">
   <form id="taskForm">
@@ -114,7 +156,7 @@
       <label>任务编号 <input id="planTaskId" type="text" readonly></label>
       <label>任务标题 <input id="planTaskTitle" type="text" maxlength="120"></label>
       <label>负责人 <input id="planTaskOwner" type="text" maxlength="60"></label>
-      <label>所属里程碑 <select id="planTaskMilestone"></select></label>
+      <div class="picker-field"><label for="planTaskMilestone">所属里程碑</label> <select id="planTaskMilestone"></select></div>
       <div class="field-row">
         <label>计划开始 <input id="planTaskStart" type="date"></label>
         <label>计划结束 <input id="planTaskEnd" type="date"></label>
@@ -242,7 +284,7 @@
       <button type="submit" id="integrationConfigSave">保存平台配置</button>
     </form>
   </details>
-  <label>任务范围 <select id="integrationTasks" multiple size="6"></select></label>
+  <div class="picker-field"><label for="integrationTasks">任务范围</label> <select id="integrationTasks" multiple size="6"></select></div>
   <p class="empty">可选中一项或多项。未选择时，拉取预览会检查全部任务；全量推送需要另行确认。</p>
   <label><input id="integrationAllowAll" type="checkbox"> 允许全量推送</label>
   <div class="dialog-actions m5-sync-actions">
