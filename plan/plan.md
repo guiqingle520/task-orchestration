@@ -562,6 +562,39 @@ tasks:
     progress: 100
     actualStart: 2026-11-19
     actualEnd: 2026-11-19
+  - id: T-50
+    title: 加固服务端静态文件边界校验、统一 JSON 请求体解析与计划原子写入
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
+  - id: T-51
+    title: 优化窄屏甘特图日期刻度自适应步长与里程碑竖线标签防重叠
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-50]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
+  - id: T-52
+    title: 统一驾驶舱全局按钮、下拉触发器与分段控件视觉样式
+    owner: antigravity
+    milestone: M7
+    start: 2026-11-19
+    end: 2026-11-19
+    deps: [T-51]
+    status: done
+    progress: 100
+    actualStart: 2026-11-19
+    actualEnd: 2026-11-19
 ---
 
 # 计划说明
@@ -639,3 +672,9 @@ tasks:
 变更记录:2026-11-19 M7 三项任务全部完成；跨项目总览、状态色、项目及里程碑跳转和同口径 Markdown 摘要通过 45 项测试与桌面、窄屏浏览器验收。
 变更记录:2026-11-19 规划者按用户确认新增 M6 体验改进 T-49，增加时间线专注模式和可选浏览器全屏，沿用原交付日。
 变更记录:2026-11-19 完成 T-49；在 Chromium 验证 1440px 和 390px 布局、原生全屏及回退、滚动恢复、规划编辑与历史只读，47 项测试通过。
+变更记录:2026-11-19 规划者按代码评审结论新增 M7 的 T-50，加固服务端静态文件边界校验、统一 POST JSON 解析并统一 plan.md 原子写入。
+变更记录:2026-11-19 antigravity 完成 T-50；服务端目录读取保护、同前缀路径逃逸拦截、统一 withJsonBody 限流与 plan.md 原子写入均已通过 48 项测试。
+变更记录:2026-11-19 规划者按代码评审 P2 结论新增 M7 的 T-51，按可用宽度自适应稀疏化甘特日期刻度并防止里程碑竖线标签重叠。
+变更记录:2026-11-19 antigravity 完成 T-51；抽取甘特布局纯函数实现窄屏刻度自适应、里程碑标签两层错排/边界翻转与 resize 重绘，全量 50 项测试通过。
+变更记录:2026-11-19 规划者按用户反馈新增 M7 的 T-52，统一驾驶舱所有按钮、下拉触发器、分段控件与组合按钮的现代白底风格。
+变更记录:2026-11-19 antigravity 完成 T-52；消除原生灰底硬框按钮，统一主/次/轻按钮、浅灰胶囊分段器、组合下拉与 hover/active/disabled 状态，全量 50 项测试通过。

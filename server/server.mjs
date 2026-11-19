@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // 驾驶舱服务: node server/server.mjs  → http://localhost:5173
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, existsSync, watch, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, watch, renameSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
 import { getTaskCommitsMap, parseCommitMessage, readGitCommits, applyCommitToTask, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
@@ -76,6 +76,18 @@ function loadPlan(project) {
   return snapshot.data ? { ...snapshot, commits: getTaskCommitsMap(project.repoRoot) } : snapshot;
 }
 
+function writePlanAtomically(planFile, output, expectedRevision = null) {
+  const temporary = `${planFile}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, output, { encoding: 'utf8', flag: 'wx' });
+    if (expectedRevision !== null && revisionOf(readFileSync(planFile, 'utf8')) !== expectedRevision) return false;
+    renameSync(temporary, planFile);
+    return true;
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+}
+
 function syncFromGit(project) {
   const planFile = project.planPath;
   if (!existsSync(planFile)) return { ok: false, message: '找不到 plan/plan.md' };
@@ -95,7 +107,7 @@ function syncFromGit(project) {
     if (errs.length) return { ok: false, message: errs.join('; ') };
     const output = updatePlanMarkdown(raw, data.tasks);
     if (!verifyTaskUpdates(output, data.tasks)) return { ok: false, message: '无法安全写回任务进度，计划未修改' };
-    writeFileSync(planFile, output, 'utf8');
+    writePlanAtomically(planFile, output);
   }
   return { ok: true, touched };
 }
@@ -240,7 +252,7 @@ function updateTask(body, project) {
   if (errors.length) throw new Error(errors.join('; '));
   const output = updatePlanMarkdown(raw, [task]);
   if (!verifyTaskUpdates(output, [task])) throw new Error('无法安全写回任务进度，计划未修改');
-  if (output !== raw) writeFileSync(planFile, output, 'utf8');
+  if (output !== raw && !writePlanAtomically(planFile, output, revisionOf(raw))) return { conflict: true, message: '任务已被其他操作修改，请刷新后重试' };
   return { ok: true, task };
 }
 
@@ -264,12 +276,7 @@ function savePlan(body, project) {
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (changed && (reason.length < 2 || /[\r\n]/.test(reason))) throw new Error('修改排期或任务结构必须填写单行变更原因');
   const output = serializePlanMarkdown(next, raw, changed ? reason : null);
-  const temporary = `${planFile}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporary, output, { encoding: 'utf8', flag: 'wx' });
-    if (revisionOf(readFileSync(planFile, 'utf8')) !== body.expectedRevision) return { conflict: true, message: '计划已变化，请刷新后重试' };
-    renameSync(temporary, planFile);
-  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  if (!writePlanAtomically(planFile, output, body.expectedRevision)) return { conflict: true, message: '计划已变化，请刷新后重试' };
   return { ok: true, data: next, revision: revisionOf(output) };
 }
 
@@ -301,14 +308,10 @@ createServer((req, res) => {
     } catch (err) { return json(res, 500, { message: err.message }); }
   }
   if (url.pathname === '/api/projects' && req.method === 'POST') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; if (body.length > 16384) req.destroy(); });
-    req.on('end', () => {
-      try { const project = workspaces.add(JSON.parse(body)); watchProject(project); json(res, 200, { ok: true, project }); }
+    return withJsonBody(req, res, 16 * 1024, (input) => {
+      try { const added = workspaces.add(input); watchProject(added); json(res, 200, { ok: true, project: added }); }
       catch (err) { json(res, 400, { message: err.message }); }
     });
-    return;
   }
   let project;
   if (url.pathname.startsWith('/api/') && url.pathname !== '/api/webhooks') {
@@ -337,32 +340,23 @@ createServer((req, res) => {
     catch { return json(res, 500, { message: '无法读取渠道配置' }); }
   }
   if (url.pathname === '/api/webhooks' && req.method === 'POST') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; if (body.length > 262144) req.destroy(); });
-    req.on('end', () => {
+    return withJsonBody(req, res, 256 * 1024, (parsed) => {
       try {
-        const parsed = JSON.parse(body);
         const projectIds = workspaces.read().projects.map(({ id }) => id);
         json(res, 200, { ok: true, channels: webhooks.save(Array.isArray(parsed) ? parsed : parsed.channels, projectIds) });
-      }
-      catch { json(res, 400, { message: '渠道配置无效或无法保存' }); }
+      } catch { json(res, 400, { message: '渠道配置无效或无法保存' }); }
     });
-    return;
   }
   if (url.pathname === '/api/notify' && req.method === 'POST') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; if (body.length > 16384) req.destroy(); });
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body);
-        if (!['risks', 'report'].includes(payload.mode) || typeof payload.channelId !== 'string') throw new Error('请求无效');
-        const event = notificationEvent(project, payload.mode);
-        json(res, 200, await webhooks.notify(project.id, event, payload.channelId));
-      } catch { json(res, 400, { message: '推送请求无效或项目不可用' }); }
+    return withJsonBody(req, res, 16 * 1024, (payload) => {
+      void (async () => {
+        try {
+          if (!payload || !['risks', 'report'].includes(payload.mode) || typeof payload.channelId !== 'string') throw new Error('请求无效');
+          const event = notificationEvent(project, payload.mode);
+          json(res, 200, await webhooks.notify(project.id, event, payload.channelId));
+        } catch { json(res, 400, { message: '推送请求无效或项目不可用' }); }
+      })();
     });
-    return;
   }
   if (url.pathname === '/api/events' && req.method === 'GET') {
     watchProject(project);
@@ -378,42 +372,42 @@ createServer((req, res) => {
     req.on('close', () => { clearInterval(heartbeat); clients.delete(res); });
     return;
   }
-  if (url.pathname === '/api/plan') {
+  if (url.pathname === '/api/plan' && req.method === 'GET') {
     if (existsSync(project.planPath)) watchProject(project);
     const r = loadPlan(project);
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify({ ...r, projectId: project.id, errors: r.data ? validate(r.data) : r.error }));
   }
   if (url.pathname === '/api/task' && req.method === 'POST') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; if (body.length > 16384) req.destroy(); });
-    req.on('end', () => {
-      try { const result = updateTask(JSON.parse(body), project); json(res, result.conflict ? 409 : 200, result); }
+    return withJsonBody(req, res, 16 * 1024, (input) => {
+      try { const result = updateTask(input, project); json(res, result.conflict ? 409 : 200, result); }
       catch (err) { json(res, 400, { message: err.message }); }
     });
-    return;
   }
   if (url.pathname === '/api/plan/save' && req.method === 'POST') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { message: '请求格式错误' });
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); });
-    req.on('end', () => {
+    return withJsonBody(req, res, 1024 * 1024, (input) => {
       try {
-        const result = savePlan(JSON.parse(body), project);
+        const result = savePlan(input, project);
         json(res, result.conflict ? 409 : result.errors || result.code === 'DEPENDENCY_CONFLICT' ? 400 : 200, result);
       } catch (err) { json(res, 400, { message: err.message }); }
     });
-    return;
   }
   if (url.pathname === '/api/sync-git' && req.method === 'POST') {
     const out = syncFromGit(project);
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(out));
   }
-  const rel = normalize(url.pathname === '/' ? '/index.html' : url.pathname).replace(/^([/\\])+/, '');
+  if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(404); return res.end('Not found'); }
+  let decodedPath;
+  try { decodedPath = decodeURIComponent(url.pathname); }
+  catch { res.writeHead(400); return res.end('Bad request'); }
+  const rel = normalize(decodedPath === '/' ? '/index.html' : decodedPath).replace(/^([/\\])+/, '');
   const file = join(webDir, rel);
-  if (!file.startsWith(webDir) || !existsSync(file)) { res.writeHead(404); return res.end('Not found'); }
+  const inside = relative(webDir, file);
+  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) { res.writeHead(404); return res.end('Not found'); }
+  let stat;
+  try { stat = statSync(file); } catch { stat = null; }
+  if (!stat || !stat.isFile()) { res.writeHead(404); return res.end('Not found'); }
   res.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
-  res.end(readFileSync(file));
+  res.end(req.method === 'HEAD' ? undefined : readFileSync(file));
 }).listen(port, '127.0.0.1', () => console.log(`驾驶舱运行于 http://localhost:${port}`));

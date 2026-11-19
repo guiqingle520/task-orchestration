@@ -6,6 +6,7 @@ import { closeSearchPicker, enhanceSearchPicker, syncSearchPicker } from './sear
 import { installPortfolio } from './portfolio-panel.js';
 import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 import { installTimelineView } from './timeline-view.js';
+import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1410,6 +1411,9 @@ function renderGantt(data, m) {
   $('timelineRange').textContent = `${fromDay(min + 1)} 至 ${fromDay(max - 1)}`;
   const fit = scale === 'fit';
   const innerW = fit ? null : n * PX[scale];
+  const ganttWidth = $('gantt')?.clientWidth || 0;
+  const trackW = $('tscroll')?.clientWidth || (ganttWidth > 260 ? ganttWidth - 220 : ganttWidth || 600);
+  const totalW = fit ? trackW : innerW;
 
   // 行布局:里程碑分组行 + (未折叠时)任务行
   const groups = m.milestones.map((ms) => ({ ms, tasks: visibleTasks.filter((t) => t.milestone === ms.id) }))
@@ -1447,12 +1451,7 @@ function renderGantt(data, m) {
       else if (dow(d) === 1) grid += `<div class="gl weak" style="left:${pct(d)}%"></div>`;
     }
   } else {
-    const want = Math.ceil(n / 9);
-    const step = want <= 1 ? 1 : want === 2 ? 2 : want <= 4 ? 3 : 7;
-    for (let d = min; d <= max; d++) {
-      const t = step === 7 ? dow(d) === 1 : (d - min) % step === 0;
-      if (t && pct(d) < 93) tick(d, fromDay(d).slice(5));
-    }
+    for (const d of computeFitTickDays(min, max, trackW)) tick(d, fromDay(d).slice(5));
   }
 
   // 左侧列表
@@ -1533,7 +1532,12 @@ function renderGantt(data, m) {
     if (plannerMode && !isTimeMachine) paths += `<path class="dep-hit" d="${curve}" data-unlink-from="${esc(d)}" data-unlink-to="${esc(t.id)}" tabindex="0" role="button" aria-label="解除 ${esc(d)} 到 ${esc(t.id)} 的依赖"><title>解除 ${esc(d)} → ${esc(t.id)} 的依赖</title></path>`;
   }
 
-  const msl = groups.map(({ ms: x }) => `<div class="msline ${selected === x.id ? 'sel' : ''}" style="left:${pct(toDay(x.due) + 1)}%"><em>◆ ${esc(x.name)}</em></div>`).join('');
+  const msLabels = layoutMilestoneLabels(groups.map(({ ms: x }) => ({ id: x.id, name: x.name, leftPct: pct(toDay(x.due) + 1) })), totalW, selected);
+  const msl = groups.map(({ ms: x }) => {
+    const pos = msLabels.get(x.id);
+    const label = pos?.visible ? `<em class="${pos.align === 'right' ? 'flip' : ''}" style="bottom:${2 + pos.lane * 18}px">◆ ${esc(x.name)}</em>` : '';
+    return `<div class="msline ${selected === x.id ? 'sel' : ''}" style="left:${pct(toDay(x.due) + 1)}%" title="${esc(x.name)}（${esc(x.due)}）">${label}</div>`;
+  }).join('');
   const todayX = pct(toDay(m.today));
   const today = `<div class="todayline" style="left:${todayX}%"></div>`;
   const todayLabel = `<b class="today-label" style="left:clamp(20px, ${todayX}%, 100% - 20px)">今天</b>`;
@@ -1660,6 +1664,12 @@ globalThis.addEventListener?.('hashchange', () => {
   if (portfolioActive) target?.focus?.({ preventScroll: true });
   else if (location.hash === '#deliveries') scrollToDeliveries = true;
   void refresh();
+});
+let resizeTimer = null;
+globalThis.addEventListener?.('resize', () => {
+  if (!last || scale !== 'fit' || planGesture) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (last && scale === 'fit' && !planGesture) renderGantt(last.data, last.m); }, 120);
 });
 updateWorkspaceNav();
 for (const [id, label] of Object.entries({
