@@ -1409,7 +1409,7 @@ function renderKpis(data, m) {
       <div class="track" role="img" aria-label="总体进度 ${Math.round(s.overall)}%，计划应达 ${Math.round(s.expectedAll)}%"><i style="width:${s.overall}%"></i><b style="--expected:${s.expectedAll}%" title="计划应达 ${Math.round(s.expectedAll)}%"></b></div></div>
     <div class="kpi"><div class="l">已完成任务</div><div class="v">${done} / ${data.tasks.length}</div><div class="l">共 ${data.tasks.length} 项任务</div></div>
     <div class="kpi"><div class="l">逾期 / 阻塞</div><div class="v"><span class="${s.overdueCount ? 'yellow' : ''}">${s.overdueCount}</span> / <span class="${s.blockedCount ? 'red' : ''}">${s.blockedCount}</span></div><div class="l">${s.overdueCount || s.blockedCount ? '有任务需要跟进' : '暂无逾期或阻塞'}</div></div>
-    <div class="kpi"><div class="l">距下个里程碑</div><div class="v">${nm ? nm.daysLeft + ' 天' : '—'}</div><div class="l">${nm ? esc(nm.id + ' · ' + nm.name) : '无未到期里程碑'}</div></div>`;
+    <div class="kpi"><div class="l">距下个里程碑</div><div class="v">${!nm ? '—' : nm.daysLeft < 0 ? `<span class="red">逾期 ${-nm.daysLeft} 天</span>` : `${nm.daysLeft} 天`}</div><div class="l">${nm ? esc(nm.id + ' · ' + nm.name) : '无待交付里程碑'}</div></div>`;
 }
 
 // T-18: SVG 燃尽图与七日速率预测卡片
@@ -1584,7 +1584,7 @@ function renderGantt(data, m) {
       else if (dow(d) === 1) grid += `<div class="gl weak" style="left:${pct(d)}%"></div>`;
     }
   } else {
-    for (const d of computeFitTickDays(min, max, trackW)) tick(d, fromDay(d).slice(5));
+    for (const d of computeFitTickDays(min, max, trackW, toDay(m.today))) tick(d, fromDay(d).slice(5));
   }
 
   // 左侧列表
@@ -1675,10 +1675,12 @@ function renderGantt(data, m) {
   const today = `<div class="todayline" style="left:${todayX}%"></div>`;
   const todayLabel = `<b class="today-label" style="left:clamp(20px, ${todayX}%, 100% - 20px)">今天</b>`;
 
+  const tailPad = groups.length ? 26 : 0;
+  const totalH = H + tailPad;
   renderMarkup(chart, `<div class="gwrap" style="--track-min:${innerW || 0}px">
     <div class="lhead">任务与状态</div><div class="thead">${ticks}${todayLabel}</div>
-    <div class="task-column">${left}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
-    <svg class="deps" viewBox="0 0 100 ${H}" preserveAspectRatio="none">
+    <div class="task-column" style="padding-bottom:${tailPad}px">${left}</div><div class="tl" style="height:${totalH}px">${grid}${bands}${bars}
+    <svg class="deps" viewBox="0 0 100 ${totalH}" preserveAspectRatio="none">
       <defs>${['depArrow', 'depArrowCritical'].map((id) => `<marker id="${id}" markerUnits="userSpaceOnUse" markerWidth=".8" markerHeight="7" viewBox="0 0 8 8" preserveAspectRatio="none" refX="8" refY="4" orient="auto"><polygon points="0,0 8,4 0,8"/></marker>`).join('')}</defs>
       ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div>`);
 

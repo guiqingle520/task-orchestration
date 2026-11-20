@@ -3,12 +3,15 @@
 const FIT_STEPS = [1, 2, 3, 7, 14, 30];
 const dow = (d) => new Date(d * 86400000).getUTCDay();
 
-export function computeFitTickDays(min, max, trackWidth = 600) {
+export function computeFitTickDays(min, max, trackWidth = 600, avoidDay = null) {
   const n = Math.max(1, max - min);
   const width = Math.max(120, Number(trackWidth) || 600);
   const maxTicks = Math.max(2, Math.floor(width / 56));
   const want = Math.ceil(n / maxTicks);
   const step = FIT_STEPS.find((candidate) => candidate >= want) ?? Math.ceil(want / 7) * 7;
+  const avoidX = typeof avoidDay === 'number' && Number.isFinite(avoidDay)
+    ? Math.max(20, Math.min(width - 20, ((avoidDay - min) / n) * width))
+    : null;
   const result = [];
   let lastX = -Infinity;
   for (let d = min; d <= max; d++) {
@@ -17,6 +20,7 @@ export function computeFitTickDays(min, max, trackWidth = 600) {
     const x = ((d - min) / n) * width;
     if (x > width - 38) continue;
     if (x - lastX < 48) continue;
+    if (avoidX !== null && x + 36 > avoidX - 24 && x < avoidX + 24) continue;
     result.push(d);
     lastX = x;
   }

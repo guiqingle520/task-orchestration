@@ -673,7 +673,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 }
 .dashboard .task-dialog .field-row > label { margin:8px 0; }
 .dashboard .task-dialog .field-row > label:has(> input[type=checkbox]) { min-height:36px; }
-.dashboard .task-dialog :is(input:not([type=checkbox]):not([type=radio]),select,textarea) {
+.dashboard .task-dialog :where(input:not([type=checkbox]):not([type=radio]),select,textarea) {
   display:block;
   width:100%;
   min-width:0;
@@ -689,6 +689,18 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   transition:border-color .14s ease,box-shadow .14s ease;
 }
 .dashboard .task-dialog textarea { min-height:64px; resize:vertical; }
+.dashboard .task-dialog select {
+  -webkit-appearance:none;
+  appearance:none;
+  height:36px;
+  padding:6px 30px 6px 10px;
+  overflow:hidden;
+  background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23575757' d='M3 4.5 6 8l3-3.5z'/%3E%3C/svg%3E") no-repeat right 10px center;
+}
+.dashboard .task-dialog select::picker-icon { display:none; }
+.tm-banner span { min-width:0; }
+.tm-banner button { flex:none; white-space:nowrap; }
+.dashboard:not(.timeline-focused) :is(.timeline-focus-planner,.timeline-detail-link) { display:none !important; }
 .dashboard .task-dialog :is(input:not([type=checkbox]):not([type=radio]),select,textarea):focus {
   outline:none;
   border-color:var(--acc);
@@ -848,7 +860,10 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   .dashboard .kpi:nth-child(odd) { border-left:0; }
   .dashboard .kpi:nth-child(n+3) { border-top:1px solid var(--b); }
   .dashboard .gantt-card { padding:12px; }
+  .overview-head { flex-direction:column; align-items:flex-start; gap:10px; }
   .overview-head h1 { font-size:26px; }
+  .overview-head p { gap:2px 6px; }
+  .overview-head-actions { width:100%; justify-content:flex-start; }
   .dashboard .lgroup .gmeta,.task-owner { display:none; }
   .dashboard .lrow { padding-inline:6px; }
 }

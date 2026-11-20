@@ -304,6 +304,6 @@ export function compute(data, todayStr) {
     today: todayStr, info: Object.fromEntries(info), milestones, risks, load, weeks, weekStart,
     summary: { overall, expectedAll, health, overdueCount: data.tasks.filter((t) => info.get(t.id).overdue).length,
       blockedCount: data.tasks.filter((t) => t.status === 'blocked').length,
-      nextMilestone: milestones.filter((m) => m.daysLeft >= 0).sort((a, b) => a.daysLeft - b.daysLeft)[0] || null },
+      nextMilestone: milestones.filter((m) => m.doneCount < m.taskCount).sort((a, b) => a.daysLeft - b.daysLeft || a.id.localeCompare(b.id, 'en', { numeric: true }))[0] || null },
   };
 }

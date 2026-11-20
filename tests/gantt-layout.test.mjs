@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeFitTickDays, layoutMilestoneLabels } from '../web/gantt-layout.js';
-import { toDay } from '../web/metrics.js';
+import { compute, toDay } from '../web/metrics.js';
 
 test('computeFitTickDays adapts tick density to track width without crowding', () => {
   const min = toDay('2026-11-09');
@@ -42,4 +42,42 @@ test('layoutMilestoneLabels staggers close milestones, flips left edge, and hide
   const leftEdge = layoutMilestoneLabels([{ id: 'M0', name: '启动里程碑', leftPct: 5 }], 400);
   assert.equal(leftEdge.get('M0').visible, true);
   assert.equal(leftEdge.get('M0').align, 'right');
+});
+
+test('computeFitTickDays avoids overlapping the today badge', () => {
+  const min = toDay('2026-11-16');
+  const max = toDay('2027-01-10');
+  const today = toDay('2026-11-20');
+  const n = max - min;
+  const width = 600;
+  const ticks = computeFitTickDays(min, max, width, today);
+  const avoidX = Math.max(20, Math.min(width - 20, ((today - min) / n) * width));
+  for (const d of ticks) {
+    const x = ((d - min) / n) * width;
+    assert.ok(!(x + 36 > avoidX - 24 && x < avoidX + 24), `tick at ${x}px overlaps today badge at ${avoidX}px`);
+  }
+});
+
+test('compute summary.nextMilestone ignores completed milestones to match portfolio summary', () => {
+  const donePlan = {
+    project: 'done-demo',
+    milestones: [{ id: 'M1', name: 'MVP', due: '2026-11-20' }],
+    tasks: [{ id: 'T-1', title: '完成', owner: 'dev', milestone: 'M1', start: '2026-11-17', end: '2026-11-18', deps: [], status: 'done', progress: 100, actualStart: '2026-11-17', actualEnd: '2026-11-18' }],
+  };
+  assert.equal(compute(donePlan, '2026-11-20').summary.nextMilestone, null);
+
+  const overdueOpenPlan = {
+    project: 'open-demo',
+    milestones: [
+      { id: 'M1', name: '逾期阶段', due: '2026-11-18' },
+      { id: 'M2', name: '后续阶段', due: '2026-11-28' },
+    ],
+    tasks: [
+      { id: 'T-1', title: '未完成', owner: 'dev', milestone: 'M1', start: '2026-11-17', end: '2026-11-18', deps: [], status: 'doing', progress: 50, actualStart: '2026-11-17', actualEnd: null },
+      { id: 'T-2', title: '待开始', owner: 'dev', milestone: 'M2', start: '2026-11-22', end: '2026-11-25', deps: ['T-1'], status: 'todo', progress: 0, actualStart: null, actualEnd: null },
+    ],
+  };
+  const next = compute(overdueOpenPlan, '2026-11-20').summary.nextMilestone;
+  assert.equal(next?.id, 'M1');
+  assert.equal(next?.daysLeft, -2);
 });
