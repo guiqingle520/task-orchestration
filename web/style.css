@@ -88,7 +88,6 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .seg{display:inline-flex;border:1px solid var(--b);border-radius:6px;overflow:hidden}
 .seg button{border:0;border-radius:0;border-right:1px solid var(--b)}.seg button:last-child{border-right:0}
 .gctrl .seg button.on{background:var(--acc);color:#fff}
-.tscroll{overflow-x:auto;overflow-y:hidden}.tinner{position:relative}
 .lgroup{height:34px;padding:0 10px;display:flex;align-items:center;gap:6px;background:#f1f5f9;border-bottom:1px solid var(--b);cursor:pointer;font-size:12px;white-space:nowrap;overflow:hidden}
 .lgroup:hover{background:#e8eef6}.lgroup .car{width:12px;color:var(--m)}.lgroup .gmeta{color:var(--m);margin-left:auto}
 .gband{position:absolute;left:0;right:0;background:#f1f5f9;border-bottom:1px solid var(--b);cursor:pointer}
@@ -318,9 +317,13 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .dashboard .simulation-controls:not(:has(#simEnabled:checked)) > :not(:first-child) { display:none; }
 .dashboard #gantt { max-height:clamp(370px,52vh,560px); overflow:auto; border:1px solid var(--b); border-radius:7px; }
 .dashboard #gantt:empty { display:none; }
-.dashboard .gwrap { border:0; border-radius:0; }
-.dashboard .gwrap > :first-child { border-right:1px solid var(--b); min-width:0; }
-.dashboard .lhead,.dashboard .thead { background:#fcfcfc; height:33px; }
+.dashboard #gantt { scroll-padding-top:33px; }
+.dashboard .gwrap { min-width:calc(var(--lw) + var(--track-min)); overflow:visible; isolation:isolate; border:0; border-radius:0; }
+.dashboard .task-column,.dashboard .lhead { position:sticky; left:0; min-width:0; border-right:1px solid var(--b); }
+.dashboard .task-column { z-index:1; background:#fff; }
+.dashboard .tl { isolation:isolate; }
+.dashboard .lhead,.dashboard .thead { position:sticky; top:0; z-index:2; overflow:hidden; background:#fcfcfc; height:33px; }
+.dashboard .lhead { z-index:3; }
 .dashboard .lhead { padding-top:8px; }
 .dashboard .thead span { top:8px; border:0; }
 .today-label { position:absolute; top:4px; transform:translateX(-50%); padding:2px 6px; background:var(--acc); color:#fff; border:2px solid #fff; border-radius:6px; white-space:nowrap; font-size:11px; font-weight:600; }

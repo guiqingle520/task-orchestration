@@ -1526,9 +1526,10 @@ function renderGantt(data, m) {
   $('timelineRange').textContent = `${fromDay(min + 1)} 至 ${fromDay(max - 1)}`;
   const fit = scale === 'fit';
   const innerW = fit ? null : n * PX[scale];
-  const ganttWidth = $('gantt')?.clientWidth || 0;
-  const trackW = $('tscroll')?.clientWidth || (ganttWidth > 260 ? ganttWidth - 220 : ganttWidth || 600);
-  const totalW = fit ? trackW : innerW;
+  const chart = $('gantt');
+  const labelWidth = chart.querySelector?.('.lhead')?.offsetWidth ?? 220;
+  const trackW = Math.max(1, (chart.clientWidth || 820) - labelWidth);
+  const totalW = fit ? trackW : Math.max(trackW, innerW);
 
   // 行布局:里程碑分组行 + (未折叠时)任务行
   const groups = m.milestones.map((ms) => ({ ms, tasks: visibleTasks.filter((t) => t.milestone === ms.id) }))
@@ -1657,19 +1658,15 @@ function renderGantt(data, m) {
   const today = `<div class="todayline" style="left:${todayX}%"></div>`;
   const todayLabel = `<b class="today-label" style="left:clamp(20px, ${todayX}%, 100% - 20px)">今天</b>`;
 
-  const prevScroll = $('tscroll')?.scrollLeft || 0;
-  $('gantt').innerHTML = `<div class="gwrap"><div><div class="lhead">任务与状态</div>${left}</div>
-    <div class="tscroll" id="tscroll"><div class="tinner" style="${fit ? 'width:100%' : `width:${innerW}px;min-width:100%`}">
-    <div class="thead">${ticks}${todayLabel}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
+  chart.innerHTML = `<div class="gwrap" style="--track-min:${innerW || 0}px">
+    <div class="lhead">任务与状态</div><div class="thead">${ticks}${todayLabel}</div>
+    <div class="task-column">${left}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
     <svg class="deps" viewBox="0 0 100 ${H}" preserveAspectRatio="none">
       <defs>${['depArrow', 'depArrowCritical'].map((id) => `<marker id="${id}" markerUnits="userSpaceOnUse" markerWidth=".8" markerHeight="7" viewBox="0 0 8 8" preserveAspectRatio="none" refX="8" refY="4" orient="auto"><polygon points="0,0 8,4 0,8"/></marker>`).join('')}</defs>
-      ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div></div></div>`;
+      ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div>`;
 
-  const sc = $('tscroll');
   if (scrollToTodayNext && !fit) {
-    sc.scrollLeft = Math.max(0, (pct(toDay(m.today)) / 100) * innerW - sc.clientWidth / 2);
-  } else {
-    sc.scrollLeft = prevScroll;
+    chart.scrollLeft = Math.max(0, (pct(toDay(m.today)) / 100) * totalW - trackW / 2);
   }
   scrollToTodayNext = false;
 }

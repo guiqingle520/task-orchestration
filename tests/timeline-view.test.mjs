@@ -26,12 +26,11 @@ function setup() {
     requestAnimationFrame(callback) { callback(); },
   };
   const chart = doc.getElementById('gantt');
-  const track = doc.getElementById('tscroll');
   chart.scrollTop = 180;
-  track.scrollLeft = 420;
+  chart.scrollLeft = 420;
   const view = installTimelineView({ document: doc });
   return {
-    doc, view, chart, track,
+    doc, view, chart,
     click: id => doc.getElementById(id).dispatchEvent(new Event('click')),
     focused: () => classes.has('timeline-focused'),
     label: id => doc.getElementById(id).textContent,
@@ -39,18 +38,18 @@ function setup() {
 }
 
 test('a denied fullscreen request leaves the expanded timeline open and Esc restores both scroll areas', async () => {
-  const { doc, click, focused, label, chart, track } = setup();
+  const { doc, click, focused, label, chart } = setup();
   doc.documentElement.requestFullscreen = async () => { throw new Error('denied'); };
   click('timelineFullscreen');
   await flush();
   assert.equal(focused(), true);
   assert.match(label('timelineViewStatus'), /保留展开视图/);
-  [doc.defaultView.scrollY, chart.scrollTop, track.scrollLeft] = [0, 50, 0];
+  [doc.defaultView.scrollY, chart.scrollTop, chart.scrollLeft] = [0, 50, 0];
   const escape = new Event('keydown', { cancelable: true });
   Object.defineProperty(escape, 'key', { value: 'Escape' });
   doc.dispatchEvent(escape);
   assert.equal(focused(), false);
-  assert.deepEqual([doc.defaultView.scrollY, chart.scrollTop, track.scrollLeft], [260, 180, 420]);
+  assert.deepEqual([doc.defaultView.scrollY, chart.scrollTop, chart.scrollLeft], [260, 180, 420]);
   assert.equal(doc.activeElement, 'timelineFocusToggle');
 });
 

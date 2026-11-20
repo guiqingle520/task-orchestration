@@ -22,8 +22,6 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
     const chart = $('gantt');
     chart.scrollTop = position.chartTop;
     chart.scrollLeft = position.chartLeft;
-    const track = $('tscroll');
-    if (track) track.scrollLeft = position.trackLeft;
   }
 
   function setToolsOpen(open) {
@@ -37,7 +35,7 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
     const chart = $('gantt');
     original = {
       x: win.scrollX, y: win.scrollY,
-      chartTop: chart.scrollTop, chartLeft: chart.scrollLeft, trackLeft: $('tscroll')?.scrollLeft ?? 0,
+      chartTop: chart.scrollTop, chartLeft: chart.scrollLeft,
     };
     restoreOnExit = true;
     menu.open = false;

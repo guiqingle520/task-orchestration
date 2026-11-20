@@ -686,6 +686,17 @@ tasks:
     progress: 100
     actualStart: 2026-11-19
     actualEnd: 2026-11-20
+  - id: T-61
+    title: 固定时间线任务与日期表头并保持横向刻度对齐
+    owner: codex
+    milestone: M8
+    start: 2026-11-20
+    end: 2026-11-20
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-20
+    actualEnd: 2026-11-20
 ---
 
 # 计划说明
@@ -794,3 +805,5 @@ tasks:
 变更记录:2026-11-19 codex 完成 T-57。T-58 可从 web/task-handoff.js 引入 readyTasks(last.data.tasks, last.m.today)，先用完整任务列表判定，再按负责人筛选，availability 为 now 或 early，reason 为入选原因。总览与任务详情共用 buildTaskHandoff(last.data, taskId, last.acceptanceByTask) 生成纯文本预览及复制内容。实时与历史快照分别提供本版本的验收标准。
 变更记录:2026-11-19 codex 提前开始 T-59，保留原排期。
 变更记录:2026-11-19 codex 完成 T-59，已验证有效计划直接注册、缺失计划预览确认创建和错误计划原文件保护。浏览器验证覆盖取消预览及预览后其他进程创建计划的情况。
+变更记录:2026-11-20 按用户要求新增 T-61，固定计划时间线表头，覆盖普通、专注与全屏视图。
+变更记录:2026-11-20 codex 完成 T-61，已在桌面普通、专注、浏览器全屏和窄屏视图验证纵向表头固定、横向任务列固定以及日期与网格对齐。
