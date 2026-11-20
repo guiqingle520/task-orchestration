@@ -159,7 +159,21 @@
           <div id="webhookStatus" class="snapshot-result" role="status"></div>
         </section>
         <section class="card" id="deliveries" data-views="overview delivery"><div class="card-head"><h2>里程碑进度</h2><span class="empty">所有阶段</span></div><div id="milestones"></div></section>
-        <section class="card" id="loadCard" data-views="overview capacity"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
+        <section class="card today-actions" id="todayActionCard" data-views="overview" aria-labelledby="today-action-title">
+          <div class="card-head">
+            <h2 id="today-action-title">今日行动</h2>
+            <select id="todayActionOwner" class="scope-select" aria-label="按负责人筛选今日行动"><option value="">全部负责人</option></select>
+          </div>
+          <div class="action-group">
+            <div class="action-group-head"><h3>需跟进</h3><span id="todayFollowCount" class="empty"></span></div>
+            <ul id="todayFollowList" class="action-list"></ul>
+          </div>
+          <div class="action-group">
+            <div class="action-group-head"><h3>可开工</h3><span id="todayReadyCount" class="empty"></span></div>
+            <ul id="todayReadyList" class="action-list"></ul>
+          </div>
+        </section>
+        <section class="card" id="loadCard" data-views="capacity"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
         <section class="card" id="capacityCard" data-views="capacity">
           <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
           <div id="capacityMetrics" aria-live="polite"></div>
@@ -343,6 +357,17 @@
   <p id="integrationDialogStatus" role="status"></p>
   <div id="integrationResults" class="m5-results" aria-live="polite"></div>
   <div class="dialog-actions"><button type="button" data-close-m5="integrationDialog">关闭</button></div>
+</dialog>
+
+<dialog id="handoffDialog" class="task-dialog" aria-labelledby="handoffTitle">
+  <h2 id="handoffTitle">任务开工说明</h2>
+  <p class="empty" id="handoffSubtitle">可直接复制给 Codex、Antigravity 或其他智能体继续执行，不会修改当前任务状态。</p>
+  <textarea id="handoffText" rows="11" readonly aria-label="任务开工说明预览"></textarea>
+  <p id="handoffCopyStatus" role="status"></p>
+  <div class="dialog-actions">
+    <button type="button" id="closeHandoff">关闭</button>
+    <button type="button" id="copyHandoffBtn">复制说明</button>
+  </div>
 </dialog>
 
 <script type="module" src="app.js"></script>

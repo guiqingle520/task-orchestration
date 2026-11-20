@@ -1,0 +1,12 @@
+{
+  "name": "task-orchestration",
+  "displayName": "任务时间线驾驶舱",
+  "version": "1.0.0",
+  "description": "任务时间线驾驶舱与计划编排 MCP 插件：查询多项目进度、筛选需跟进与可开工任务、校验 plan.md 并带并发锁安全写回任务进度。",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "查看当前项目有哪些需跟进和现在可开工的任务",
+    "校验 plan/plan.md 并汇总当前里程碑交付风险",
+    "把指定任务的状态更新为进行中或已完成"
+  ]
+}

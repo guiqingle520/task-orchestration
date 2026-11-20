@@ -8,6 +8,7 @@ import { installPortfolio } from './portfolio-panel.js';
 import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 import { installTimelineView } from './timeline-view.js';
 import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
+import { buildTaskHandoff, readyTasks } from './task-handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -44,6 +45,7 @@ let webhookChannelsDraft = [];
 let webhookProjects = [];
 const taskFilterFields = { query: 'taskQuery', status: 'filterStatus', owner: 'filterOwner', milestone: 'filterMilestone' };
 let taskFilters = {};
+let todayActionOwner = '';
 
 // T-29: 时间机器与基线幽灵条状态
 let isTimeMachine = false;
@@ -611,15 +613,16 @@ function clearPlan() {
   planConfirmation = null;
   selected = null;
   editingTask = taskEditBase = milestoneEditBase = null;
-  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog']) if ($(id)?.open) $(id).close();
+  todayActionOwner = '';
+  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog']) if ($(id)?.open) $(id).close();
   for (const id of ['kpis', 'gctrl', 'timelineActions', 'timelineOptions', 'timelineRange', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
-    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks']) {
+    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks', 'todayFollowList', 'todayReadyList']) {
     if ($(id)) {
       $(id).innerHTML = '';
       renderedMarkup.delete($(id));
     }
   }
-  for (const id of ['project', 'overviewProject', 'pill', 'riskCount']) if ($(id)) $(id).textContent = '';
+  for (const id of ['project', 'overviewProject', 'pill', 'riskCount', 'todayFollowCount', 'todayReadyCount']) if ($(id)) $(id).textContent = '';
   if ($('pill')) $('pill').className = 'pill';
   $('taskFilters').hidden = $('follow-up').hidden = true;
   setPlanAvailable(false);
@@ -970,6 +973,17 @@ document.addEventListener('click', (e) => {
     revealTimelineItem(followUp.dataset.followTask);
     return;
   }
+  const quickEdit = e.target.closest('[data-quick-edit]');
+  if (quickEdit && last && !isTimeMachine) {
+    const task = last.data.tasks.find((item) => item.id === quickEdit.dataset.quickEdit);
+    if (task) openTaskModal(task, false);
+    return;
+  }
+  const handoff = e.target.closest('[data-handoff-task]');
+  if (handoff && last) {
+    openHandoffModal(handoff.dataset.handoffTask);
+    return;
+  }
   const stage = e.target.closest('[data-show-stage]');
   if (stage && last) {
     setTaskFilters({ milestone: stage.dataset.showStage });
@@ -1183,6 +1197,7 @@ function renderAll(scroll) {
   $('overviewProject').textContent = data.project;
   updateTaskFilters(data);
   renderKpis(data, m);
+  renderTodayActions(data, m);
   renderGantt(data, m);
   renderFollowUp(data, m);
   renderDetail(data, m);
@@ -1190,7 +1205,7 @@ function renderAll(scroll) {
   renderRisks(data, m);
   renderMilestones(m);
   renderLoad(m);
-  for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterOwner', 'filterMilestone']) syncSearchPicker($(id));
+  for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterOwner', 'filterMilestone', 'todayActionOwner']) syncSearchPicker($(id));
   if (scroll && selected) document.querySelector('.lrow.sel, .lgroup.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
@@ -1281,6 +1296,68 @@ async function copyTaskLink() {
     field.focus();
     field.select();
     message.textContent = '无法访问剪贴板，请手动复制链接。';
+  }
+}
+
+function openHandoffModal(taskId) {
+  if (!last) return;
+  const text = buildTaskHandoff(last.data, taskId, last.acceptanceByTask || {});
+  if (!text) return;
+  const field = $('handoffText');
+  if (field) field.value = text;
+  if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '';
+  $('handoffDialog')?.showModal?.();
+}
+
+function renderTodayActions(data, m) {
+  const ownerSelect = $('todayActionOwner');
+  if (ownerSelect) {
+    const owners = [...new Set(data.tasks.map((task) => task.owner))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+    if (todayActionOwner && !owners.includes(todayActionOwner)) todayActionOwner = '';
+    const markup = [['', '全部负责人'], ...owners.map((owner) => [owner, owner])]
+      .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+    if (ownerSelect.innerHTML !== markup) ownerSelect.innerHTML = markup;
+    ownerSelect.value = todayActionOwner;
+  }
+  const byOwner = ({ task }) => !todayActionOwner || task.owner === todayActionOwner;
+  const followItems = followUpTasks(data.tasks, m.today).filter(byOwner);
+  const readyItems = readyTasks(data.tasks, m.today).filter(byOwner);
+  const actionButtons = (task) => {
+    const edit = isTimeMachine ? '' : `<button type="button" data-quick-edit="${esc(task.id)}">更新进度</button>`;
+    return `<div class="action-item-buttons">${edit}<button type="button" data-handoff-task="${esc(task.id)}">复制开工说明</button></div>`;
+  };
+  if ($('todayFollowCount')) $('todayFollowCount').textContent = `${followItems.length} 项`;
+  if ($('todayFollowList')) {
+    renderMarkup($('todayFollowList'), followItems.map(({ task, priority, days }) => {
+      const date = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天后到期`;
+      const reason = priority === 0 && days > 7 ? `阻塞中 · 计划截止 ${task.end}` : date;
+      return `<li class="action-item">
+        <div class="action-item-main">
+          <span class="status-chip ${priority === 0 ? 'red' : 'yellow'}">${['阻塞', '逾期', '即将到期'][priority]}</span>
+          <div class="action-item-info">
+            <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
+            <span class="action-item-reason">${esc(task.owner)} · ${esc(reason)} · 当前 ${task.progress}%</span>
+          </div>
+        </div>
+        ${actionButtons(task)}
+      </li>`;
+    }).join('') || '<li class="empty">当前没有阻塞、逾期或 7 天内到期的任务。</li>');
+  }
+  if ($('todayReadyCount')) $('todayReadyCount').textContent = `${readyItems.length} 项`;
+  if ($('todayReadyList')) {
+    renderMarkup($('todayReadyList'), readyItems.map(({ task, availability, reason }) => {
+      const [label, tone] = availability === 'now' ? ['现在可开工', 'green'] : ['可提前开始', 'blue'];
+      return `<li class="action-item">
+        <div class="action-item-main">
+          <span class="status-chip ${tone}">${label}</span>
+          <div class="action-item-info">
+            <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
+            <span class="action-item-reason">${esc(task.owner)} · ${esc(reason)} · 计划 ${task.start} 开始</span>
+          </div>
+        </div>
+        ${actionButtons(task)}
+      </li>`;
+    }).join('') || '<li class="empty">当前没有前置已完成的待开始任务。</li>');
   }
 }
 
@@ -1603,7 +1680,8 @@ function renderDetail(data, m) {
   if (t) {
     const i = m.info[t.id];
     const cmts = (last.commits?.[t.id] || []).slice(-3).map((c) => `<code>${esc(c.hash)}</code> ${esc(c.subject)}(${esc(c.date)})`).join(' · ');
-    const editBtn = isTimeMachine ? '' : `<br><button type="button" data-edit-task>${plannerMode ? '规划/拆分任务' : '编辑任务'}</button> ${m5Panels.issueMarkup(t.id)}
+    const handoffBtn = `<button type="button" data-handoff-task="${esc(t.id)}">复制开工说明</button>`;
+    const editBtn = isTimeMachine ? `<br>${handoffBtn}` : `<br><button type="button" data-edit-task>${plannerMode ? '规划/拆分任务' : '编辑任务'}</button> ${handoffBtn} ${m5Panels.issueMarkup(t.id)}
       <button type="button" data-copy-task-link>复制任务链接</button> <span id="taskCopyMessage" role="status"></span>
       <input type="url" id="taskLinkFallback" class="task-link-fallback" aria-label="任务链接" readonly hidden>`;
     renderMarkup(el, `<span class="detail-label">当前任务</span><b>${esc(t.id)} ${esc(t.title)}</b> · ${STATUS[t.status]} · 负责人 ${esc(t.owner)}<br>
@@ -1712,9 +1790,26 @@ globalThis.addEventListener?.('resize', () => {
   resizeTimer = setTimeout(() => { if (last && scale === 'fit' && !planGesture) renderGantt(last.data, last.m); }, 120);
 });
 updateWorkspaceNav();
+$('todayActionOwner')?.addEventListener('change', () => {
+  todayActionOwner = $('todayActionOwner').value;
+  if (last) renderTodayActions(last.data, last.m);
+});
+$('closeHandoff')?.addEventListener('click', () => $('handoffDialog')?.close?.());
+$('copyHandoffBtn')?.addEventListener('click', async () => {
+  const text = $('handoffText')?.value || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '已复制开工说明到剪贴板，任务状态未改动。';
+  } catch {
+    $('handoffText')?.focus?.();
+    $('handoffText')?.select?.();
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '无法自动访问剪贴板，已选中文本，请按 Ctrl+C 复制。';
+  }
+});
 for (const [id, label] of Object.entries({
   projectSelect: '工作区项目', simTask: '模拟任务', burndownScope: '燃尽图里程碑', snapshots: '历史快照',
-  planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterOwner: '负责人', filterMilestone: '里程碑',
+  planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterOwner: '负责人', filterMilestone: '里程碑', todayActionOwner: '今日行动负责人',
 })) enhanceSearchPicker($(id), label);
 setPlanAvailable(false);
 refresh();
