@@ -9,7 +9,6 @@ h1{font-size:18px;margin:0}.proj{color:var(--m)}
 .ctrl{display:flex;align-items:center;gap:10px;color:var(--m)}
 .ctrl input,.ctrl button{font:inherit;border:1px solid var(--b);border-radius:6px;padding:3px 8px;background:#fff;color:var(--t)}
 .ctrl button{cursor:pointer}.ctrl button:hover{background:var(--bg)}
-.live{display:flex;align-items:center;gap:6px;font-size:12px}.live i{width:8px;height:8px;border-radius:50%;background:var(--g)}
 h2{font-size:13px;margin:0 0 10px;color:var(--t);font-weight:600}
 h2 small{color:var(--m);font-weight:400;margin-left:8px;font-size:12px}
 .errors{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:8px;padding:10px 14px;margin-bottom:12px}
@@ -229,9 +228,6 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .workspace-nav a:hover,.workspace-nav a[aria-current=location] { background:#f0f0f0; }
 .workspace-nav a[aria-current=location] { font-weight:650; }
 .workspace-foot { margin-top:auto; border-top:1px solid var(--b); padding-top:14px; }
-.workspace-foot .live { font-weight:600; }
-.workspace-foot .live i { background:#414141; }
-.workspace-foot #updated { margin-left:14px; }
 .workspace-top { position:sticky; top:0; z-index:6; min-height:64px; padding:10px 24px; background:#fff; border-bottom:1px solid var(--b); }
 .workspace-crumb { display:flex; align-items:center; gap:10px; min-width:0; color:var(--m); font-size:13px; }
 .workspace-crumb strong { color:var(--t); overflow-wrap:anywhere; }
