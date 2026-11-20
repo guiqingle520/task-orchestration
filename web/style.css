@@ -287,7 +287,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .timeline-view-menu summary:hover,.timeline-view-menu[open] summary { background:#f0f0f0; }
 .timeline-view-menu button { position:absolute; z-index:8; top:calc(100% + 4px); right:0; min-width:max-content; min-height:32px; box-shadow:0 4px 14px #0002; }
 .timeline-view-status { margin:5px 0; color:var(--m); }
-.timeline-view-status:empty,.timeline-focus-planner,.timeline-history-label,.timeline-detail-link,.timeline-tools-toggle { display:none; }
+.timeline-view-status:empty,.timeline-focus-planner,.timeline-history-label,.timeline-detail-link { display:none; }
 .timeline-focused { overflow:hidden; }
 .timeline-focused :is(.workspace-rail,.workspace-top,#overview,.dashboard-side,#tmBanner,#errors,#taskLinkNotice,.skip-link) { display:none; }
 .dashboard.timeline-focused #timeline { position:fixed; inset:0; z-index:7; display:grid; grid-template-rows:auto minmax(0,1fr); gap:4px; padding:clamp(8px,1.4vw,22px); border:0; border-radius:0; background:#fff; }
@@ -298,10 +298,6 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .timeline-focused #follow-up { padding-bottom:16px; }
 .timeline-focused :is(.timeline-focus-planner,.timeline-history-label,.timeline-detail-link) { display:inline-block; }
 .timeline-detail-link { color:var(--acc); font-size:12px; }
-@media (max-width:680px), (max-height:740px) {
-  .timeline-focused .timeline-tools-toggle { display:inline-block; }
-  .timeline-focused #timelineTools:not(.is-open) { display:none; }
-}
 .timeline-focus-planner[aria-pressed=true] { background:var(--t); color:#fff; }
 .timeline-key .legend { gap:7px 12px; }
 .dashboard .gctrl button,.dashboard .snapshot-controls button { min-height:28px; }
@@ -552,12 +548,8 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   color:#fff;
   border-color:#18181b;
 }
-.dashboard:not(.timeline-focused) :is(.timeline-focus-planner,.timeline-detail-link,.timeline-tools-toggle),
-.dashboard.timeline-focused .timeline-tools-toggle {
+.dashboard:not(.timeline-focused) :is(.timeline-focus-planner,.timeline-detail-link) {
   display:none;
-}
-@media (max-width:680px), (max-height:740px) {
-  .dashboard.timeline-focused .timeline-tools-toggle { display:inline-flex; }
 }
 .dashboard #timelineFocusToggle {
   border-radius:7px 0 0 7px;

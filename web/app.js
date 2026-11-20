@@ -1502,7 +1502,7 @@ function renderGantt(data, m) {
   $('filterCount').textContent = `${visibleTasks.length} / ${data.tasks.length} 项任务`;
   if (filtering && !visibleTasks.length) {
     $('timelineRange').textContent = '';
-    $('gantt').innerHTML = '<p class="gantt-empty">没有匹配的任务。请调整条件或点击「清空筛选」。</p>';
+    renderMarkup($('gantt'), '<p class="gantt-empty">没有匹配的任务。请调整条件或点击「清空筛选」。</p>');
     return;
   }
   let timelineDiff = null;
@@ -1658,12 +1658,12 @@ function renderGantt(data, m) {
   const today = `<div class="todayline" style="left:${todayX}%"></div>`;
   const todayLabel = `<b class="today-label" style="left:clamp(20px, ${todayX}%, 100% - 20px)">今天</b>`;
 
-  chart.innerHTML = `<div class="gwrap" style="--track-min:${innerW || 0}px">
+  renderMarkup(chart, `<div class="gwrap" style="--track-min:${innerW || 0}px">
     <div class="lhead">任务与状态</div><div class="thead">${ticks}${todayLabel}</div>
     <div class="task-column">${left}</div><div class="tl" style="height:${H}px">${grid}${bands}${bars}
     <svg class="deps" viewBox="0 0 100 ${H}" preserveAspectRatio="none">
       <defs>${['depArrow', 'depArrowCritical'].map((id) => `<marker id="${id}" markerUnits="userSpaceOnUse" markerWidth=".8" markerHeight="7" viewBox="0 0 8 8" preserveAspectRatio="none" refX="8" refY="4" orient="auto"><polygon points="0,0 8,4 0,8"/></marker>`).join('')}</defs>
-      ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div>`;
+      ${paths}<path class="dep-draft" aria-hidden="true"/></svg>${msl}${today}</div></div>`);
 
   if (scrollToTodayNext && !fit) {
     chart.scrollLeft = Math.max(0, (pct(toDay(m.today)) / 100) * totalW - trackW / 2);

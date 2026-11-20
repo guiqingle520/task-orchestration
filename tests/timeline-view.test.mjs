@@ -7,12 +7,10 @@ function setup() {
   const doc = new EventTarget();
   const elements = new Map();
   const classes = new Set();
-  const toolClasses = new Set();
   doc.body = { classList: { add: value => classes.add(value), remove: value => classes.delete(value) } };
   doc.getElementById = id => {
     if (!elements.has(id)) elements.set(id, Object.assign(new EventTarget(), {
       scrollTop: 0, scrollLeft: 0, setAttribute() {}, focus() { doc.activeElement = id; },
-      classList: { toggle(value, open) { if (open) toolClasses.add(value); else toolClasses.delete(value); }, contains: value => toolClasses.has(value) },
     }));
     return elements.get(id);
   };
@@ -22,6 +20,7 @@ function setup() {
   doc.fullscreenElement = null;
   doc.defaultView = {
     scrollX: 0, scrollY: 260,
+    matchMedia: () => ({ matches: true }),
     scrollTo(x, y) { this.scrollX = x; this.scrollY = y; },
     requestAnimationFrame(callback) { callback(); },
   };
@@ -68,4 +67,34 @@ test('closing while browser permission is pending cannot reopen the expanded vie
   assert.equal(focused(), false);
   assert.equal(doc.fullscreenElement, null);
   assert.equal(exits, 1);
+});
+
+test('opening the compact tools brings them into view and toggles the action label', () => {
+  const { doc, click, label } = setup();
+  const tools = doc.getElementById('timelineTools');
+  const toggle = doc.getElementById('timelineToolsToggle');
+  const scroll = doc.getElementById('timelineFocusScroll');
+  const jumps = [];
+  scroll.clientTop = 0;
+  scroll.getBoundingClientRect = () => ({ top: 120 });
+  tools.getBoundingClientRect = () => ({ top: -180 });
+  scroll.scrollTo = options => jumps.push(options);
+  toggle.setAttribute = (name, value) => { assert.equal(name, 'aria-expanded'); toggle.expanded = value; };
+  click('timelineFocusToggle');
+  scroll.scrollTop = 340;
+  click('timelineToolsToggle');
+  assert.deepEqual(jumps, [{ top: 40, behavior: 'instant' }]);
+  assert.equal(tools.hidden, false);
+  assert.equal(toggle.expanded, 'true');
+  assert.equal(label('timelineToolsToggle'), '收起筛选与工具');
+  click('timelineToolsToggle');
+  assert.equal(jumps.length, 1);
+  assert.equal(tools.hidden, true);
+  assert.equal(toggle.expanded, 'false');
+  assert.equal(label('timelineToolsToggle'), '展开筛选与工具');
+  click('timelineFocusToggle');
+  assert.equal(tools.hidden, false);
+  click('timelineToolsToggle');
+  assert.equal(tools.hidden, true);
+  assert.equal(toggle.expanded, 'false');
 });

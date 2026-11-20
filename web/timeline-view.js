@@ -6,6 +6,7 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
   const menu = $('timelineViewMenu');
   const tools = $('timelineTools');
   const toolsToggle = $('timelineToolsToggle');
+  const focusScroll = $('timelineFocusScroll');
   let original = null, native = '', ticket = 0, restoreOnExit = true;
 
   function setStatus(message = '') {
@@ -26,7 +27,8 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
 
   function setToolsOpen(open) {
     toolsToggle.setAttribute('aria-expanded', String(open));
-    tools.classList.toggle('is-open', open);
+    toolsToggle.textContent = open ? '收起筛选与工具' : '展开筛选与工具';
+    tools.hidden = !open;
   }
 
   function open() {
@@ -35,13 +37,13 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
     const chart = $('gantt');
     original = {
       x: win.scrollX, y: win.scrollY,
-      chartTop: chart.scrollTop, chartLeft: chart.scrollLeft,
+      chartTop: chart.scrollTop, chartLeft: chart.scrollLeft, toolsOpen: !tools.hidden,
     };
     restoreOnExit = true;
     menu.open = false;
-    setToolsOpen(false);
+    if (win.matchMedia?.('(max-width:680px), (max-height:740px)').matches) setToolsOpen(false);
     doc.body.classList.add('timeline-focused');
-    $('timelineFocusScroll').scrollTop = 0;
+    focusScroll.scrollTop = 0;
     restoreChart(original);
     setStatus();
     sync();
@@ -56,6 +58,7 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
     const closed = ++ticket;
     menu.open = false;
     doc.body.classList.remove('timeline-focused');
+    setToolsOpen(position.toolsOpen);
     setStatus();
     sync();
     if (!restoreOnExit) return;
@@ -120,7 +123,14 @@ export function installTimelineView({ document: doc = document, beforeOpen = () 
 
   toggle.addEventListener('click', () => original ? void close() : open());
   $('timelineFullscreen').addEventListener('click', fullscreen);
-  toolsToggle.addEventListener('click', () => setToolsOpen(!tools.classList.contains('is-open')));
+  toolsToggle.addEventListener('click', () => {
+    const open = tools.hidden;
+    setToolsOpen(open);
+    if (!open || !original) return;
+    const top = focusScroll.scrollTop + tools.getBoundingClientRect().top
+      - focusScroll.getBoundingClientRect().top - focusScroll.clientTop;
+    focusScroll.scrollTo({ top, behavior: 'instant' });
+  });
   $('timelineDetailJump').addEventListener('click', () => {
     const detail = $('detail');
     detail.focus({ preventScroll: true });
