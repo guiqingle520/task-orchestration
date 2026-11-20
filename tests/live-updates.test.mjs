@@ -135,9 +135,13 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   const readHistory = (query) => fetch(`${base}/api/history?${query}`);
   const listing = await (await readHistory('project=second&limit=2')).json();
   assert.equal(listing.projectId, 'second');
+  assert.equal(listing.frames, undefined);
   assert.equal(listing.current.revision, liveSecond.revision);
   assert.deepEqual(listing.commits.map(({ hash, subject, taskCount }) => [hash, subject, taskCount]), [[historyHash, historySubject, secondPlan.data.tasks.length]]);
   const historical = await (await readHistory(`project=second&rev=${historyHash.slice(0, 7)}`)).json();
+  const preloaded = await (await readHistory('project=second&limit=2&frames=1')).json();
+  assert.deepEqual(preloaded.commits, listing.commits);
+  assert.deepEqual(preloaded.frames[historyHash], { data: historical.data, acceptanceByTask: historical.acceptanceByTask });
   assert.equal(historical.currentRevision, liveSecond.revision);
   assert.equal(historical.commit.hash, historyHash);
   assert.equal(historical.data.tasks[0].progress, secondTask.progress);

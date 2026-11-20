@@ -51,8 +51,10 @@ let todayActionOwner = '';
 let isTimeMachine = false;
 let showBaselineGhost = false;
 let historyCommits = [];
-let historyCurrent = null;
 const historyCache = new Map();
+let historyFetch = null;
+let historySliderFrame = null;
+let historySeekTimer = null;
 let baselinePlanData = null;
 let currentFrameIndex = 0;
 let historyRequest = 0;
@@ -605,7 +607,6 @@ function clearPlan() {
   if (isTimeMachine) exitTimeMachine(false);
   historyRequest++;
   historyCommits = [];
-  historyCurrent = null;
   historyCache.clear();
   baselinePlanData = null;
   last = null;
@@ -658,7 +659,7 @@ async function enterTimeMachine() {
   const base = last;
   const sequence = ++historyRequest;
   try {
-    const res = await (await fetch(apiUrl('/api/history', base.projectId))).json();
+    const res = await (await fetch(apiUrl('/api/history?frames=1', base.projectId))).json();
     if (!last || sequence !== historyRequest || base.epoch !== workspaceEpoch || last.projectId !== base.projectId) return;
     if (!res.commits || !res.commits.length) {
       if ($('planGestureMessage')) $('planGestureMessage').textContent = '当前项目暂无有效的 Git 历史计划快照';
@@ -669,7 +670,7 @@ async function enterTimeMachine() {
     for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'webhookDialog']) if ($(id)?.open) $(id).close();
     editingTask = taskEditBase = milestoneEditBase = planConfirmation = null;
     historyCommits = res.commits;
-    historyCurrent = res.current;
+    for (const [hash, frame] of Object.entries(res.frames || {})) historyCache.set(hash, frame);
     liveBackup = { ...last, data: structuredClone(last.data) };
     if ($('timeMachineBar')) $('timeMachineBar').hidden = false;
     if ($('tmBanner')) $('tmBanner').hidden = false;
@@ -692,6 +693,12 @@ function exitTimeMachine(restore = true) {
   stopPlay();
   isTimeMachine = false;
   historyRequest++;
+  historyFetch?.abort();
+  historyFetch = null;
+  if (historySliderFrame !== null) cancelAnimationFrame(historySliderFrame);
+  historySliderFrame = null;
+  clearTimeout(historySeekTimer);
+  historySeekTimer = null;
   if ($('timeMachineBar')) $('timeMachineBar').hidden = true;
   if ($('tmBanner')) $('tmBanner').hidden = true;
   if (liveBackup) {
@@ -711,6 +718,27 @@ async function loadHistoryFrame(index) {
   currentFrameIndex = index;
   const commit = historyCommits[index];
   if ($('tmSlider')) $('tmSlider').value = index;
+  historyFetch?.abort();
+  historyFetch = null;
+
+  let cached = historyCache.get(commit.hash);
+  if (!cached) {
+    const controller = new AbortController();
+    historyFetch = controller;
+    try {
+      const res = await (await fetch(apiUrl(`/api/history?rev=${encodeURIComponent(commit.hash)}`, base.projectId), { signal: controller.signal })).json();
+      if (!controller.signal.aborted && isTimeMachine && base.epoch === workspaceEpoch && res.data) {
+        cached = res;
+        historyCache.set(commit.hash, cached);
+      }
+    } catch { /* A later slider position can cancel the read. */ }
+    finally { if (historyFetch === controller) historyFetch = null; }
+  }
+  if (!isTimeMachine || sequence !== historyRequest || base.epoch !== workspaceEpoch) return;
+  if (!cached?.data) {
+    $('tmFrameInfo').textContent = `无法加载快照 ${commit.shortHash}，请重试`;
+    return;
+  }
   if ($('tmBannerCommit')) $('tmBannerCommit').textContent = `${commit.shortHash} (${commit.date}) - ${commit.subject}`;
   if ($('tmFrameInfo')) {
     $('tmFrameInfo').innerHTML = `<span class="tm-badge">${esc(commit.shortHash)}</span>
@@ -718,17 +746,6 @@ async function loadHistoryFrame(index) {
       当时进度: <b>${Math.round(commit.overall)}%</b> (${commit.doneCount}/${commit.taskCount} 项完成)`;
   }
 
-  let cached = historyCache.get(commit.hash);
-  if (!cached) {
-    try {
-      const res = await (await fetch(apiUrl(`/api/history?rev=${encodeURIComponent(commit.hash)}`, base.projectId))).json();
-      if (isTimeMachine && base.epoch === workspaceEpoch && res.data) {
-        cached = res;
-        historyCache.set(commit.hash, cached);
-      }
-    } catch { /* 忽略 */ }
-  }
-  if (!cached?.data || !isTimeMachine || sequence !== historyRequest || base.epoch !== workspaceEpoch) return;
   const frameDate = commit.date;
   const m = compute(cached.data, frameDate);
   last = {
@@ -1747,7 +1764,24 @@ $('tmBannerExit')?.addEventListener('click', () => exitTimeMachine(true));
 $('tmPlayPause')?.addEventListener('click', togglePlay);
 $('tmSlider')?.addEventListener('input', (e) => {
   stopPlay();
-  void loadHistoryFrame(Number(e.target.value));
+  historyRequest++;
+  historyFetch?.abort();
+  clearTimeout(historySeekTimer);
+  historySeekTimer = null;
+  if (historySliderFrame !== null) cancelAnimationFrame(historySliderFrame);
+  historySliderFrame = null;
+  const index = Number(e.target.value);
+  if (!historyCache.has(historyCommits[index]?.hash)) {
+    historySeekTimer = setTimeout(() => {
+      historySeekTimer = null;
+      void loadHistoryFrame(index);
+    }, 100);
+    return;
+  }
+  historySliderFrame = requestAnimationFrame(() => {
+    historySliderFrame = null;
+    void loadHistoryFrame(index);
+  });
 });
 document.addEventListener('change', async (e) => {
   if (e.target?.id === 'showBaselineGhost') {

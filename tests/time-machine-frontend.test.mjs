@@ -7,6 +7,8 @@ test('T-29: Time machine playback, read-only controls, and baseline ghost bar ov
     fetch: globalThis.fetch,
     EventSource: globalThis.EventSource,
     setInterval: globalThis.setInterval,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
     localStorage: globalThis.localStorage,
   };
   t.after(() => Object.assign(globalThis, saved));
@@ -48,6 +50,8 @@ test('T-29: Time machine playback, read-only controls, and baseline ghost bar ov
   };
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.setInterval = () => 0;
+  globalThis.requestAnimationFrame = fn => setTimeout(fn, 0);
+  globalThis.cancelAnimationFrame = clearTimeout;
 
   globalThis.EventSource = class {
     constructor() {}
@@ -96,7 +100,10 @@ test('T-29: Time machine playback, read-only controls, and baseline ghost bar ov
       return { ok: true, json: async () => ({ projectId: 'default', commit: historyCommits[1], data: currentPlan }) };
     }
     if (url.startsWith('/api/history')) {
-      return { ok: true, json: async () => ({ projectId: 'default', current: { revision: 'rev-current', date: '2026-11-18' }, commits: historyCommits }) };
+      return { ok: true, json: async () => ({
+        projectId: 'default', current: { revision: 'rev-current', date: '2026-11-18' }, commits: historyCommits,
+        ...(url.includes('frames=1') ? { frames: { '1111111': { data: commit1Plan }, '2222222': { data: currentPlan } } } : {}),
+      }) };
     }
     return { ok: true, json: async () => ({}) };
   };
@@ -131,6 +138,7 @@ test('T-29: Time machine playback, read-only controls, and baseline ghost bar ov
 
   assert.match(elements.get('tmFrameInfo').innerHTML, /2222222/);
   assert.match(elements.get('tmBannerCommit').textContent, /完成 T-1/);
+  assert.equal(fetchCalls.some(url => url.includes('rev=')), false);
 
   // 4. 退出时间机器模式
   await elements.get('tmExit').dispatch('click');

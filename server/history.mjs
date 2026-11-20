@@ -10,6 +10,7 @@ const run = promisify(execFile);
 const FORMAT = '%H%x00%h%x00%aI%x00%an%x00%s';
 const REVISION = /^[0-9a-f]{7,40}$/i;
 const MAX_HISTORY = 100;
+const FRAME_BUDGET = 1024 * 1024;
 const GIT_LOCATION_VARS = [
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
   'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_SHALLOW_FILE', 'GIT_REPLACE_REF_BASE',
@@ -28,11 +29,15 @@ async function gitContext(project) {
   }
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1' };
   for (const key of GIT_LOCATION_VARS) delete env[key];
-  const git = async (args, missingExitCodes = []) => {
+  const git = async (args, missingExitCodes = [], input) => {
     try {
-      const { stdout } = await run('git', ['--no-pager', '--no-replace-objects', '--literal-pathspecs', ...args], {
-        cwd: root, encoding: 'utf8', env, timeout: 5000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+      const command = run('git', ['--no-pager', '--no-replace-objects', '--literal-pathspecs', ...args], {
+        cwd: root, encoding: input === undefined ? 'utf8' : 'buffer', env, timeout: 5000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
       });
+      const stdin = command.child.stdin;
+      stdin.on('error', () => {}); // Git can close stdin before a failed command exits.
+      stdin.end(input);
+      const { stdout } = await command;
       return stdout;
     } catch (err) {
       if (missingExitCodes.includes(err.code)) return null;
@@ -50,14 +55,43 @@ function commitMetadata(line) {
   return { hash, shortHash, date: timestamp.slice(0, 10), timestamp, author, subject };
 }
 
-async function readVersion({ git, path }, hash, includeAcceptance = false) {
-  const raw = await git(['show', hash + ':' + path], [128]);
+function parseVersion(raw, includeAcceptance) {
   if (raw == null) return null;
   try {
     const data = parseFrontMatter(raw);
     if (!data || validate(data).length) return null;
     return includeAcceptance ? { data, acceptanceByTask: extractAcceptanceByTask(raw) } : { data };
   } catch { return null; }
+}
+
+async function readVersion({ git, path }, hash, includeAcceptance = false) {
+  return parseVersion(await git(['show', hash + ':' + path], [128]), includeAcceptance);
+}
+
+async function readHistoryBlobs({ git, path }, records) {
+  // Files with line breaks and histories that exceed the output limit use the per-commit reader.
+  if (path.includes('\n') || !records.length) return null;
+  try {
+    const input = records.map(({ hash }) => `${hash}:${path}\n`).join('');
+    const output = await git(['cat-file', '--batch'], [], input);
+    let offset = 0;
+    return records.map(() => {
+      const end = output.indexOf(10, offset);
+      if (end < 0) throw new Error('Git batch response missing header');
+      const header = output.toString('utf8', offset, end);
+      offset = end + 1;
+      if (header.endsWith(' missing')) return null;
+      const match = /^[a-f0-9]+ (\w+) (\d+)$/.exec(header);
+      if (!match) throw new Error('Invalid Git object header');
+      const next = offset + Number(match[2]);
+      if (output[next] !== 10) throw new Error('Truncated Git object');
+      const content = match[1] === 'blob' ? output.toString('utf8', offset, next) : null;
+      offset = next + 1;
+      return content;
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function summarizePlanFrame(data, date) {
@@ -70,26 +104,39 @@ export function summarizePlanFrame(data, date) {
 }
 
 export async function listPlanHistory(project, limit = 50) {
+  return (await readPlanHistory(project, limit)).commits;
+}
+
+export async function readPlanHistory(project, limit = 50, includeFrames = false) {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_HISTORY) {
     throw new HistoryError(400, '历史提交 limit 必须是 1 至 100 的整数');
   }
   const context = await gitContext(project);
-  if (!context) return [];
+  const commits = [];
+  const frames = {};
+  if (!context) return { commits, frames };
   const { git, path } = context;
-  if (!await git(['rev-parse', '--verify', 'HEAD'], [128])) return [];
-  const log = await git(['log', '-n', String(limit), '--format=' + FORMAT, 'HEAD', '--', path]);
+  const log = await git(['log', '-n', String(limit), '--format=' + FORMAT, 'HEAD', '--', path], [128]);
+  if (!log) return { commits, frames };
   const records = log.split(/\r?\n/).filter(Boolean).map(commitMetadata).reverse()
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-  const commits = [];
-  // 有界并行读取快照，让 Git I/O 不阻塞实时刷新和 SSE。
+  const blobs = await readHistoryBlobs(context, records);
+  let remaining = FRAME_BUDGET;
   for (let i = 0; i < records.length; i += 4) {
-    const batch = await Promise.all(records.slice(i, i + 4).map(async (commit) => {
-      const frame = await readVersion(context, commit.hash);
-      return frame && { ...commit, ...summarizePlanFrame(frame.data, commit.date) };
-    }));
-    commits.push(...batch.filter(Boolean));
+    const batch = records.slice(i, i + 4);
+    const versions = blobs ? blobs.slice(i, i + batch.length).map(raw => parseVersion(raw, includeFrames && remaining > 0))
+      : await Promise.all(batch.map(commit => readVersion(context, commit.hash)));
+    for (const [index, commit] of batch.entries()) {
+      const frame = versions[index];
+      if (!frame) continue;
+      commits.push({ ...commit, ...summarizePlanFrame(frame.data, commit.date) });
+      if (frame.acceptanceByTask) {
+        remaining -= Buffer.byteLength(JSON.stringify(frame));
+        if (remaining >= 0) frames[commit.hash] = frame;
+      }
+    }
   }
-  return commits;
+  return { commits, frames };
 }
 
 export async function getPlanAtCommit(project, commitHash) {

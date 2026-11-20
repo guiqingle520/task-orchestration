@@ -779,7 +779,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .dashboard[data-view="tools"] .dashboard-board > [data-views~="tools"] { display:block; }
 .dashboard[data-view="tools"] #integrations { grid-column:1 / -1; }
 .dashboard:not([data-view="overview"]) #overview { display:none; }
-.dashboard[data-view="timeline"] #gantt { max-height:clamp(440px,64vh,760px); }
+.dashboard[data-view="timeline"]:not(.timeline-focused) #gantt { max-height:clamp(440px,64vh,760px); }
 .dashboard[data-view="timeline"] .gantt-card { padding:20px 22px; }
 .dashboard[data-view="overview"] #burndownCard .burndown-chart svg { max-height:220px; }
 /* T-58: 项目总览「今日行动」与开工说明预览弹窗 */

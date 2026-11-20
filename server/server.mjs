@@ -11,7 +11,7 @@ import { createWorkspaces } from './workspaces.mjs';
 import { extractAcceptanceByTask } from './plan-acceptance.mjs';
 import { summarizeProject, validPortfolioDate } from './portfolio.mjs';
 import { createWebhookService } from './webhooks.mjs';
-import { getPlanAtCommit, HistoryError, listPlanHistory, summarizePlanFrame } from './history.mjs';
+import { getPlanAtCommit, HistoryError, listPlanHistory, readPlanHistory, summarizePlanFrame } from './history.mjs';
 import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
 import { CapacityConfigError, normalizeCapacityConfig, readCapacityConfig, writeCapacityConfig } from './capacity.mjs';
 import { createIntegrationService, IntegrationError } from './integrations.mjs';
@@ -197,8 +197,9 @@ async function serveHistory(res, project, params) {
   try {
     const rev = params.get('rev');
     const limit = params.get('limit');
+    const includeFrames = params.get('frames') === '1';
     const historical = rev === null ? null : await getPlanAtCommit(project, rev);
-    const commits = historical ? null : await listPlanHistory(project, limit === null ? undefined : /^\d+$/.test(limit) ? Number(limit) : NaN);
+    const history = historical ? null : await readPlanHistory(project, limit === null ? undefined : /^\d+$/.test(limit) ? Number(limit) : NaN, includeFrames);
     // Git 读取期间工作树可能更新。版本与 diff 始终使用同一次当前计划读取。
     let currentProject;
     try { currentProject = workspaces.get(project.id); }
@@ -214,7 +215,8 @@ async function serveHistory(res, project, params) {
     });
     const today = dashboardToday();
     return json(res, 200, {
-      projectId: project.id, commits,
+      projectId: project.id, commits: history.commits,
+      ...(includeFrames ? { frames: history.frames } : {}),
       current: current ? { revision: current.revision, ...summarizePlanFrame(current.data, today) } : null,
     });
   } catch (err) {
