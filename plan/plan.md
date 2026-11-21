@@ -25,6 +25,9 @@ milestones:
   - id: M8
     name: 今日行动工作台、新项目接入向导与 MCP 插件
     due: 2026-12-25
+  - id: M9
+    name: 多负责人与多智能体协同、任务认领锁与动态面板
+    due: 2026-12-02
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -752,6 +755,72 @@ tasks:
     progress: 100
     actualStart: 2026-11-20
     actualEnd: 2026-11-20
+  - id: T-67
+    title: 实现计划级跨进程互斥锁、租约代次判定纯函数与多负责人侧车存储服务
+    owner: codex
+    milestone: M9
+    start: 2026-11-23
+    end: 2026-11-24
+    deps: []
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-68
+    title: 扩展 MCP 认领、代次心跳与释放工具并统一全写入口租约冲突拦截
+    owner: codex
+    milestone: M9
+    start: 2026-11-25
+    end: 2026-11-26
+    deps: [T-67]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-69
+    title: 提供多负责人与任务认领 REST 接口并扩展侧车文件变更 SSE 实时广播
+    owner: codex
+    milestone: M9
+    start: 2026-11-25
+    end: 2026-11-26
+    deps: [T-67]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-70
+    title: 升级多负责人选择器并在今日行动与开工说明弹窗实现分步认领与复制交互
+    owner: antigravity
+    milestone: M9
+    start: 2026-11-26
+    end: 2026-11-27
+    deps: [T-67, T-69]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-71
+    title: 在负载页构建执行动态与名录面板并在甘特任务列与详情区接入锁状态与接管交互
+    owner: antigravity
+    milestone: M9
+    start: 2026-11-30
+    end: 2026-12-01
+    deps: [T-69, T-70]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
+  - id: T-72
+    title: 补齐跨进程并发抢单、代次接管、Git 同步防绕过与离线导出脱敏回归测试
+    owner: codex
+    milestone: M9
+    start: 2026-12-02
+    end: 2026-12-02
+    deps: [T-68, T-71]
+    status: todo
+    progress: 0
+    actualStart: null
+    actualEnd: null
 ---
 
 # 计划说明
@@ -876,3 +945,16 @@ tasks:
 变更记录:2026-11-20 codex 完成 T-65，已确认本地页面移除固定标签和黑点，保留更新时间与连接状态。
 变更记录:2026-11-20 规划者按双端联合验收报告 docs/QA_2026-11-20.md 新增 M8 的 T-66，一次性收口剩余 7 项口径、交互与视觉细节问题。
 变更记录:2026-11-20 antigravity 完成 T-66；统一单项目与跨项目下个里程碑口径，修复普通时间线专注按钮重复显示、弹窗 select 箭头折行、甘特今天徽章避让、底部里程碑安全留白、时间机器横幅按钮换行及 390px 总览头部排版，65 项测试全部通过。
+
+### M9 · 多负责人与多智能体协同、任务认领锁与动态面板（V2 评审定稿）
+
+| 任务 | 验收标准 |
+|---|---|
+| T-67 | 实现计划级跨进程互斥锁 `withPlanLock(planPath, fn)`（基于 `<planPath>.lock` 原子互斥与 Windows `EPERM/EACCES` 有界退避重试，失败保留原文件并清理临时文件）。侧车文件与 `capacity.json` 同构隔离（标准计划为 `plan/claims.json`，自定义计划为 `<planFile>.claims.json`），不修改 `plan/plan.md` 的 YAML 字段。导出纯函数 `evaluateClaims(claimsData, planData, nowIso)`（外部注入 `nowIso`，不依赖真实 sleep），精确判定 `active`（`now < expiresAt`）、`stale`（`now >= expiresAt`）与 `orphaned`（任务已删除）；区分智能体（`kind: 'agent'`，默认 TTL 30 分钟）与人类负责人（`kind: 'human'`，默认 TTL 480 分钟/8 小时）。每次认领或接管生成唯一租约代次 `leaseId`；进入协调锁或读取时，若任务在 `plan.md` 已 `done` 则幂等自愈清理该完工周期前的残留租约；常规事件写入 `activityLog`（上限 100 条），强制接管与强制释放独立写入 `auditLog`（上限 100 条）防高频心跳冲刷。 |
+| T-68 | 新增 MCP 工具 `plan_claim_task`、`plan_heartbeat_task`、`plan_release_task`，并增强 `plan_update_task`、`plan_get_overview`（支持 `unclaimedOnly: true`）、`plan_get_task`。所有受支持的写入口（MCP、REST `/api/task`、`/api/claims`、`/api/plan/save`、`syncFromGit` / `scripts/sync-git-progress.mjs`、Issue 拉取确认）统一收口在 `withPlanLock` 临界区内重读并校验租约与版本。已 `done` 任务拒绝认领（`409 TASK_ALREADY_DONE`）；存在他人 `active` 租约且非 `force` 时认领或写回返回 `409`；超时租约接管须显式传 `takeoverStale: true`（或 `force: true` 并填 `reason`）生成新 `leaseId`，原执行者（含同名重启实例）持旧 `leaseId` 迟到的心跳、进度更新或释放一律返回 `409 LEASE_SUPERSEDED`，绝不误删新锁。旧版未传 `actor` 的调用在目标任务无 `active` 租约时保持兼容，有 `active` 租约时返回 `409 TASK_LOCKED_BY_CLAIM`；`status: 'done'` 写回成功时按匹配的当前 `leaseId` 条件释放租约。Git 同步遇到他人 `active` 租约任务时跳过自动改写并报告冲突；规划保存 `savePlan` 删改 `active` 持锁任务时默认返回 `409 ACTIVE_CLAIM_CONFLICT`（除非显式确认清理）。 |
+| T-69 | 提供 `GET /api/claims?project=<id>` 与 `POST /api/claims?project=<id>`（支持 `claim / heartbeat / release / roster`）。認领默认 `startImmediately: false`（不把 `todo` 静默塞入 `10%` 假进度）；若显式传 `startImmediately: true` 且写 `plan.md` 失败，返回明确状态 `claimed_but_not_started: true` 及恢复指引。扩展 `server/server.mjs` 的 `watchProject` 同时监听 `plan.md` 与 `<planFile>.claims.json` 的原子重命名，外部 MCP 认领/续租/释放时通过 `/api/events` 秒级通知 Web 端刷新。离线 HTML 导出（`POST /api/export/html`）严格保持白名单，绝不将 `claims.json` 的 `actor`、心跳 `note`、名录 `roster` 或 `activityLog/auditLog` 写入导出源码；`buildTaskHandoff` 仅附加当前任务一行认领状态与 MCP 指令，不附带名录或他人备注。 |
+| T-70 | 在任务编辑、今日行动与时间线筛选器中支持开放式多负责人选择与录入（自动聚合 `plan.md` 既有 `owner` 与名录 `roster`，支持新增人类成员、团队或 AI 智能体）。严守 M8 既有契约：保留原「复制开工说明」（纯只读复制，不认领、不改状态），并列新增独立的「认领并复制」操作（事前明确展示认领人 `actor`、租约期限及是否同时将 `todo` 转为 `doing`）；若认领成功但剪贴板失败，明确提示「已认领，复制失败」并保留手动复制重试。日常界面当未认领或 `actor === task.owner` 时合并展示单一标识，仅在跨负责人代领时并列展示「负责人：X · 执行中：Y」。时间机器历史回放模式下禁用所有认领写操作，并标注「历史回放，不显示实时认领」。 |
+| T-71 | 保持现有 6 视图导航不新增第 7 主导航：在「负载与工时」页新增项目级「在岗执行动态与负责人名录」区块（展示活跃认领、已超时可接管项、双轨协同事件流及名录管理弹窗；人员负载统计仍以 `task.owner` 为准，在岗执行按 `claim.actor` 另计）。甘特图任务条内部不堆叠长姓名或倒计时（避免遮挡进度与拖拽手柄），改为在左侧固定任务名称列渲染紧凑无障碍锁状态标识（待认领/持锁中/已超时），点击任务在下方详情区查看完整 `actor`、到期时间、心跳备注并执行认领、发送心跳、确认接管或必填原因强制解锁。接管超时任务时明确提示「租约已过期，原执行者可能仍在工作」并二次确认；`390px` 窄屏下纵向阅读无横向溢出，断线重连后自动重读权威快照。 |
+| T-72 | 复用 `tests/mcp.test.mjs` 的 `mkdtemp + spawn stdio` 模式补齐自动化回归测试套件并保持全量测试通过：1) 双子进程同步屏障并发认领同一任务，必有一方 `200`、一方 `409`；2) A 租约超时 → B 接管生成新 `leaseId` → A（含同名实例）延迟发心跳、写进度、释放均返回 `409 LEASE_SUPERSEDED` 且 B 租约完好；3) `startImmediately` 与 `done` 释放的故障注入半成功状态及重启幂等自愈；4) `git commit` / `plan:sync` 与 `savePlan` 对他人 `active` 持锁任务的防绕过拦截与孤儿租约安全渲染；5) `POST /api/export/html` 在开启/关闭脱敏时导出 HTML 源码均零侧车数据泄漏。 |
+
+变更记录:2026-11-22 规划者根据用户确认与本地 Multica 方案头脑风暴智囊团（GUIQ-26）五视角评审结论，新增里程碑 M9（2026-12-02 交付）与任务 T-67 ~ T-72，并产出详细技术设计规范 `docs/M9_DESIGN.md`。
