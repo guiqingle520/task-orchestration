@@ -788,6 +788,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .dashboard[data-view="timeline"] .dashboard-board > [data-views~="timeline"] { display:block; grid-column:1 / -1; }
 .dashboard[data-view="delivery"] .dashboard-board > [data-views~="delivery"] { display:block; }
 .dashboard[data-view="capacity"] .dashboard-board > [data-views~="capacity"] { display:block; }
+.dashboard[data-view="capacity"] #claimsLiveCard { grid-column:1 / -1; }
 .dashboard[data-view="tools"] .dashboard-board > [data-views~="tools"] { display:block; }
 .dashboard[data-view="tools"] #integrations { grid-column:1 / -1; }
 .dashboard:not([data-view="overview"]) #overview { display:none; }
@@ -825,9 +826,115 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .dashboard .action-item-buttons button { min-height:26px; padding:3px 9px; font-size:11px; }
 .dashboard .status-chip.green { background:#ecfdf5; color:var(--g); border-color:#a7f3d0; }
 .dashboard .status-chip.blue { background:var(--accent-soft); color:var(--acc); border-color:#bfdbfe; }
-.dashboard #copyHandoffBtn { background:#18181b; color:#fff; border-color:#18181b; }
-.dashboard #copyHandoffBtn:hover:not(:disabled) { background:#2e2e33; border-color:#2e2e33; }
+.dashboard #copyHandoffBtn { background:#fff; color:var(--t); border-color:#d4d4d8; }
+.dashboard #copyHandoffBtn:hover:not(:disabled) { background:#f4f4f5; border-color:#bcbcc2; }
+.dashboard #claimAndCopyHandoffBtn { background:#18181b; color:#fff; border-color:#18181b; }
+.dashboard #claimAndCopyHandoffBtn:hover:not(:disabled) { background:#2e2e33; border-color:#2e2e33; }
 #handoffText { font-family:ui-monospace,SFMono-Regular,Consolas,"Microsoft YaHei",monospace; font-size:12px; line-height:1.5; margin-top:10px; }
+
+/* M9 (T-70 & T-71): 多负责人、任务认领锁徽章、分步开工说明与在岗执行动态面板 */
+.claim-chip,.gantt-claim-badge {
+  display:inline-flex;
+  align-items:center;
+  gap:3px;
+  font-size:10px;
+  font-weight:600;
+  line-height:1.25;
+  padding:1px 6px;
+  border-radius:4px;
+  border:1px solid var(--b);
+  white-space:nowrap;
+  max-width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.claim-chip.unclaimed { background:#f8fafc; color:var(--m); border-color:#e2e8f0; }
+.claim-chip.active,.claim-chip.mine,.gantt-claim-badge.active { background:var(--accent-soft); color:var(--acc); border-color:#bfdbfe; }
+.claim-chip.stale,.gantt-claim-badge.stale { background:var(--amber-bg); color:var(--y); border-color:var(--amber-line); }
+.claim-chip.history,.claim-chip.unknown { background:#f4f4f5; color:var(--m); border-color:#d4d4d8; }
+.gantt-claim-badge { max-width:74px; flex:0 1 auto; }
+.claim-banner {
+  margin:8px 0;
+  padding:8px 10px;
+  border-radius:7px;
+  border:1px solid var(--b);
+  background:#fafafa;
+  font-size:12px;
+  color:var(--t);
+}
+.claim-banner.active { background:var(--accent-soft); border-color:#bfdbfe; color:var(--acc); }
+.claim-banner.stale { background:var(--amber-bg); border-color:var(--amber-line); color:var(--y); }
+.claim-banner.history { background:#f4f4f5; color:var(--m); }
+.handoff-claim-box {
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fafafa;
+  margin-bottom:8px;
+}
+.detail-claim-box {
+  margin:8px 0 4px;
+  padding:8px 10px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#fafafa;
+  display:grid;
+  gap:5px;
+  font-size:12px;
+}
+.detail-claim-note { color:var(--t); font-weight:500; overflow-wrap:anywhere; }
+.detail-claim-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.m9-live-section + .m9-live-section,.m9-events-details {
+  margin-top:16px;
+  padding-top:14px;
+  border-top:1px solid var(--line);
+}
+.m9-live-section h3 { margin:0 0 8px; font-size:14px; font-weight:650; color:var(--t); }
+.m9-live-section h3 small { margin-left:8px; font-weight:400; font-size:11px; }
+.live-claims-list { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+.live-claim-item {
+  padding:10px 12px;
+  border:1px solid var(--b);
+  border-radius:8px;
+  background:#fcfcfc;
+  display:grid;
+  gap:6px;
+}
+.live-claim-item.stale { border-color:var(--amber-line); background:#fffdf7; }
+.live-claim-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.live-claim-meta { font-size:12px; color:var(--m); overflow-wrap:anywhere; }
+.live-claim-note { font-size:12px; color:var(--t); background:#fff; padding:5px 8px; border-radius:5px; border:1px solid var(--line); overflow-wrap:anywhere; }
+.orphan-notice {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  flex-wrap:wrap;
+  padding:8px 10px;
+  margin-bottom:8px;
+  border-radius:7px;
+  border:1px solid var(--amber-line);
+  background:var(--amber-bg);
+  color:var(--y);
+  font-size:12px;
+}
+.roster-kind {
+  display:inline-block;
+  padding:1px 6px;
+  border-radius:4px;
+  font-size:11px;
+  border:1px solid var(--b);
+}
+.roster-kind.human { background:#ecfdf5; color:var(--g); border-color:#a7f3d0; }
+.roster-kind.agent { background:var(--accent-soft); color:var(--acc); border-color:#bfdbfe; }
+.m9-events-details summary { cursor:pointer; font-size:13px; font-weight:600; color:var(--t); }
+.m9-event-tabs { margin:10px 0 8px; }
+.live-events-list { list-style:none; margin:0; padding:0; max-height:220px; overflow:auto; font-size:12px; }
+.live-events-list li { padding:5px 0; border-top:1px solid var(--line); display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; }
+.live-events-list li:first-child { border-top:0; }
+.ev-time { color:var(--m); font-size:11px; }
+.ev-type { padding:1px 5px; border-radius:4px; background:#f4f4f5; font-size:11px; }
+.ev-meta { color:var(--m); overflow-wrap:anywhere; }
 @media(max-width:960px) {
   .dashboard-board { grid-template-columns:minmax(0,1fr); }
 }

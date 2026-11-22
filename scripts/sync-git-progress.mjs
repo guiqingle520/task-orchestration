@@ -10,9 +10,12 @@
 //   - 指定进度: "T-3 60%" / "[T-3: 60%]" / "T-3 progress 60"
 //   - 仅提及任务(如 "feat(T-3): xxx"): 若为 todo 则自动转为 doing、填 actualStart、progress 设为 મેં(默认至少 10)
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { parseFrontMatter, parseScalar, validate } from './validate-plan.mjs';
+import { reconcileDoneClaims } from '../server/claims.mjs';
+import { atomicReplaceFile, PlanLockError, revisionOf, withPlanLock } from '../server/plan-lock.mjs';
+import { claimState } from '../web/claims.js';
 
 const todayLocal = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
@@ -221,6 +224,41 @@ export function getTaskCommitsMap(cwd = process.cwd()) {
   return map;
 }
 
+export function syncPlanFromCommits(planFile, commits, { describe = (task, commit) => `${task.id}@${commit.hash}` } = {}) {
+  return withPlanLock(planFile, (file) => {
+    const raw = readFileSync(file, 'utf8');
+    const data = parseFrontMatter(raw);
+    if (!data || !Array.isArray(data.tasks)) return { ok: false, message: 'plan.md 格式错误' };
+    const now = Date.now();
+    const config = reconcileDoneClaims(file, data, now);
+    const byId = new Map(data.tasks.map((task) => [task.id, task]));
+    const touched = [];
+    const skipped = new Map();
+    for (const commit of commits) {
+      for (const [id, update] of commit.updates) {
+        const task = byId.get(id);
+        if (!task) continue;
+        const claim = config.claims[id];
+        if (claim && claimState(claim, task, now) === 'active') {
+          skipped.set(id, { id, actor: claim.actor, leaseId: claim.leaseId });
+        } else if (applyCommitToTask(task, update, commit.date)) {
+          touched.push(describe(task, commit));
+        }
+      }
+    }
+    if (touched.length) {
+      const errors = validate(data);
+      if (errors.length) return { ok: false, message: errors.join('; ') };
+      const output = updatePlanMarkdown(raw, data.tasks);
+      if (!verifyTaskUpdates(output, data.tasks)) return { ok: false, message: '无法安全写回任务进度，计划未修改' };
+      if (output !== raw && !atomicReplaceFile(file, output, revisionOf(raw))) {
+        throw new PlanLockError(409, 'CONFLICT', '计划已变化，请刷新后重试');
+      }
+    }
+    return { ok: true, touched, skippedLockedTasks: [...skipped.values()] };
+  });
+}
+
 // CLI 入口
 const isCli = process.argv[1]?.endsWith('sync-git-progress.mjs');
 if (isCli) {
@@ -234,57 +272,18 @@ if (isCli) {
   const msgText = getArg('--msg');
   const dateOverride = getArg('--date') || todayLocal();
 
-  if (!existsSync(planFile)) {
-    console.error(`✗ 找不到 ${planFile}`);
-    process.exit(1);
+  try {
+    const commits = msgFile || msgText !== null
+      ? [{ date: dateOverride, updates: parseCommitMessage(msgFile ? readFileSync(msgFile, 'utf8') : msgText) }]
+      : readGitCommits();
+    const result = syncPlanFromCommits(planFile, commits, {
+      describe: (task, { hash }) => `${task.id}${hash ? '@' + hash : ''}(${task.status} ${task.progress}%)`,
+    });
+    if (!result.ok) throw new Error(result.message);
+    for (const { id, actor } of result.skippedLockedTasks) console.error(`跳过 ${id}：${actor} 持有活跃租约`);
+    console.log(result.touched.length ? `✓ 已根据 git commit 同步任务进度: ${result.touched.join(', ')}` : '✓ 无需更新任务进度');
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    process.exitCode = 1;
   }
-
-  const rawPlan = readFileSync(planFile, 'utf8');
-  const data = parseFrontMatter(rawPlan);
-  if (!data || !Array.isArray(data.tasks)) {
-    console.error(`✗ ${planFile} 缺少有效的 YAML front matter`);
-    process.exit(1);
-  }
-  const byId = new Map(data.tasks.map((t) => [t.id, t]));
-  const touched = [];
-
-  if (msgFile || msgText !== null) {
-    const content = msgFile ? readFileSync(msgFile, 'utf8') : msgText;
-    const updates = parseCommitMessage(content);
-    for (const [id, u] of updates) {
-      const task = byId.get(id);
-      if (task && applyCommitToTask(task, u, dateOverride)) {
-        touched.push(`${id}(${task.status} ${task.progress}%)`);
-      }
-    }
-  } else {
-    const commits = readGitCommits();
-    for (const c of commits) {
-      for (const [id, u] of c.updates) {
-        const task = byId.get(id);
-        if (task && applyCommitToTask(task, u, c.date)) {
-          touched.push(`${id}@${c.hash}(${task.status} ${task.progress}%)`);
-        }
-      }
-    }
-  }
-
-  if (touched.length === 0) {
-    console.log('✓ 无需更新任务进度');
-    process.exit(0);
-  }
-
-  const errs = validate(data);
-  if (errs.length) {
-    console.error(`✗ 同步后校验未通过:`, errs.join('; '));
-    process.exit(1);
-  }
-
-  const nextText = updatePlanMarkdown(rawPlan, data.tasks);
-  if (!verifyTaskUpdates(nextText, data.tasks)) {
-    console.error('✗ 无法安全写回任务进度，计划未修改');
-    process.exit(1);
-  }
-  writeFileSync(planFile, nextText, 'utf8');
-  console.log(`✓ 已根据 git commit 同步任务进度: ${touched.join(', ')}`);
 }

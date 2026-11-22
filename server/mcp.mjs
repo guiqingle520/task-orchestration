@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // 零依赖标准 stdio MCP 服务：提供计划查询、校验与带并发冲突检查的任务进度写回工具。
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, validate } from '../scripts/validate-plan.mjs';
@@ -12,6 +11,10 @@ import { summarizeProject } from './portfolio.mjs';
 import { compute } from '../web/metrics.js';
 import { filterTasks, followUpTasks } from '../web/m6.js';
 import { buildTaskHandoff, readyTasks } from '../web/task-handoff.js';
+import { checkTaskWrite, completeClaim } from './claims.mjs';
+import { mutateClaims, withClaimsSnapshot } from './claim-service.mjs';
+import { atomicReplaceFile, PlanLockError, revisionOf } from './plan-lock.mjs';
+import { evaluateClaims } from '../web/claims.js';
 
 const DEFAULT_ROOT = join(fileURLToPath(new URL('..', import.meta.url)));
 const SERVER_INFO = { name: 'task-orchestration', version: '1.0.0' };
@@ -19,8 +22,6 @@ const PROTOCOL_VERSION = '2024-11-05';
 const EXEC_FIELDS = ['status', 'progress', 'actualStart', 'actualEnd'];
 const VALID_STATUSES = ['todo', 'doing', 'blocked', 'done'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-const revisionOf = (text) => createHash('sha256').update(text).digest('hex');
 
 function localToday() {
   const now = new Date();
@@ -40,21 +41,9 @@ function readPlanSnapshot(project) {
     const raw = readFileSync(planFile, 'utf8');
     const data = parseFrontMatter(raw);
     if (!data) return { error: ['plan.md 缺少 YAML front matter'] };
-    return { raw, data, revision: revisionOf(raw), acceptanceByTask: extractAcceptanceByTask(raw) };
+    return { data, revision: revisionOf(raw) };
   } catch (err) {
     return { error: [err.message] };
-  }
-}
-
-function writePlanAtomically(planFile, output, expectedRevision) {
-  const tmp = `${planFile}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(tmp, output, { encoding: 'utf8', flag: 'wx' });
-    if (revisionOf(readFileSync(planFile, 'utf8')) !== expectedRevision) return false;
-    renameSync(tmp, planFile);
-    return true;
-  } finally {
-    if (existsSync(tmp)) unlinkSync(tmp);
   }
 }
 
@@ -65,6 +54,14 @@ function toolOk(payload) {
 function toolErr(status, code, message, extra = {}) {
   const payload = { ok: false, status, code, message, ...extra };
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
+}
+
+const claimAddress = { projectId: { type: 'string' }, id: { type: 'string' }, actor: { type: 'string' } };
+const renewalFields = { ttlMinutes: { type: 'integer', minimum: 5, maximum: 1440 }, note: { type: 'string' } };
+const forceFields = { force: { type: 'boolean' }, reason: { type: 'string' } };
+
+function claimTool(name, description, required, properties) {
+  return { name, description, inputSchema: { type: 'object', required, properties: { ...claimAddress, ...properties }, additionalProperties: false } };
 }
 
 export const MCP_TOOL_DEFINITIONS = [
@@ -91,6 +88,7 @@ export const MCP_TOOL_DEFINITIONS = [
         status: { type: 'string', enum: VALID_STATUSES, description: '按状态筛选。' },
         milestone: { type: 'string', description: '按里程碑 ID 筛选。' },
         query: { type: 'string', description: '按任务 ID 或标题关键字筛选。' },
+        unclaimedOnly: { type: 'boolean', description: '仅列出当前没有活跃认领的任务。' },
       },
       additionalProperties: false,
     },
@@ -145,11 +143,28 @@ export const MCP_TOOL_DEFINITIONS = [
         actualStart: { type: ['string', 'null'], description: '可选实际开始日期 YYYY-MM-DD（未传时自动维护）。' },
         actualEnd: { type: ['string', 'null'], description: '可选实际结束日期 YYYY-MM-DD（未传时自动维护）。' },
         today: { type: 'string', description: '可选当天日期 YYYY-MM-DD，用于自动填充 actualStart/actualEnd。' },
+        actor: { type: 'string', description: '任务有活跃认领时须提供当前执行人。' },
+        leaseId: { type: 'string', description: '认领返回的租约代次，写回时携带以防旧实例覆盖。' },
       },
       additionalProperties: false,
     },
   },
+  claimTool('plan_claim_task', '认领任务并返回租约代次。默认保留计划进度，接管已超时的租约需显式确认。',
+    ['id', 'actor'], { actorKind: { type: 'string', enum: ['human', 'agent'] }, ...renewalFields, ...forceFields,
+      startImmediately: { type: 'boolean' }, takeoverStale: { type: 'boolean' }, expectedLeaseId: { type: 'string' } }),
+  claimTool('plan_heartbeat_task', '用当前租约代次续租，可同时更新备注。',
+    ['id', 'actor', 'leaseId'], { ...renewalFields, leaseId: { type: 'string' } }),
+  claimTool('plan_release_task', '释放认领。正常释放时提供执行人和租约代次，强制释放时提供原因。',
+    ['id'], { ...forceFields, leaseId: { type: 'string' } }),
 ];
+
+const claimActions = new Map([['plan_claim_task', 'claim'], ['plan_heartbeat_task', 'heartbeat'], ['plan_release_task', 'release']]);
+
+function compactClaim(claim) {
+  if (!claim) return null;
+  const { state, actor, leaseId, expiresAt, note } = claim;
+  return { state, actor, leaseId, expiresAt, note };
+}
 
 export function createMcpService(rootDir = DEFAULT_ROOT) {
   const root = resolve(rootDir);
@@ -159,7 +174,7 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
     return workspaces.get(projectId || '');
   }
 
-  function callTool(name, args = {}) {
+  function invokeTool(name, args = {}) {
     const input = args && typeof args === 'object' ? args : {};
     if (name === 'plan_list_projects') {
       const today = input.today || localToday();
@@ -181,6 +196,8 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
       return toolErr(404, 'PROJECT_NOT_FOUND', err.message || '项目不存在');
     }
 
+    if (claimActions.has(name)) return toolOk(mutateClaims(project, { ...input, action: claimActions.get(name) }, localToday()));
+
     if (name === 'plan_validate') {
       const snap = readPlanSnapshot(project);
       if (snap.error) return toolOk({ ok: true, projectId: project.id, valid: false, errors: snap.error });
@@ -199,59 +216,60 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
     if (name === 'plan_get_overview') {
       const today = input.today || localToday();
       if (!validDate(today)) return toolErr(400, 'INVALID_DATE', 'today 必须是有效的 YYYY-MM-DD 日期');
-      const snap = readPlanSnapshot(project);
-      if (snap.error) return toolErr(400, 'PLAN_UNAVAILABLE', snap.error.join('; '));
-      const errors = validate(snap.data);
-      if (errors.length) return toolErr(400, 'PLAN_INVALID', errors.join('; '), { errors });
-      const metrics = compute(snap.data, today);
-      const owner = typeof input.owner === 'string' ? input.owner.trim() : '';
-      const byOwner = ({ task }) => !owner || task.owner === owner;
-      const filtered = filterTasks(snap.data.tasks, {
-        owner,
-        status: input.status || '',
-        milestone: input.milestone || '',
-        query: input.query || '',
-      });
-      return toolOk({
-        ok: true,
-        projectId: project.id,
-        project: snap.data.project,
-        today,
-        revision: snap.revision,
-        summary: metrics.summary,
-        followUp: followUpTasks(snap.data.tasks, today).filter(byOwner).map(({ task, priority, days }) => ({
-          id: task.id, title: task.title, owner: task.owner, status: task.status, progress: task.progress,
-          priority: ['blocked', 'overdue', 'due-soon'][priority], daysLeft: days,
-        })),
-        ready: readyTasks(snap.data.tasks, today).filter(byOwner).map(({ task, availability, reason }) => ({
-          id: task.id, title: task.title, owner: task.owner, start: task.start, end: task.end, availability, reason,
-        })),
-        tasks: filtered,
+      return withClaimsSnapshot(project, (snap) => {
+        const { claims } = evaluateClaims(snap.config, snap.data, snap.now);
+        const metrics = compute(snap.data, today);
+        const owner = typeof input.owner === 'string' ? input.owner.trim() : '';
+        const eligible = (task) => input.unclaimedOnly !== true || claims[task.id]?.state !== 'active';
+        const visible = ({ task }) => (!owner || task.owner === owner) && eligible(task);
+        const filtered = filterTasks(snap.data.tasks.filter(eligible), {
+          owner,
+          status: input.status || '',
+          milestone: input.milestone || '',
+          query: input.query || '',
+        });
+        return toolOk({
+          ok: true,
+          projectId: project.id,
+          project: snap.data.project,
+          today,
+          revision: snap.revision,
+          summary: metrics.summary,
+          followUp: followUpTasks(snap.data.tasks, today).filter(visible).map(({ task, priority, days }) => ({
+            id: task.id, title: task.title, owner: task.owner, status: task.status, progress: task.progress,
+            priority: ['blocked', 'overdue', 'due-soon'][priority], daysLeft: days, claim: compactClaim(claims[task.id]),
+          })),
+          ready: readyTasks(snap.data.tasks, today).filter(visible).map(({ task, availability, reason }) => ({
+            id: task.id, title: task.title, owner: task.owner, start: task.start, end: task.end, availability, reason, claim: compactClaim(claims[task.id]),
+          })),
+          tasks: filtered.map((task) => ({ ...task, claim: compactClaim(claims[task.id]) })),
+        });
       });
     }
 
     if (name === 'plan_get_task') {
       if (typeof input.id !== 'string' || !input.id.trim()) return toolErr(400, 'INVALID_ID', '必须提供任务 ID');
-      const snap = readPlanSnapshot(project);
-      if (snap.error) return toolErr(400, 'PLAN_UNAVAILABLE', snap.error.join('; '));
-      const errors = validate(snap.data);
-      if (errors.length) return toolErr(400, 'PLAN_INVALID', errors.join('; '), { errors });
-      const task = snap.data.tasks.find((item) => item.id === input.id.trim());
-      if (!task) return toolErr(404, 'TASK_NOT_FOUND', `找不到任务 ${input.id}`);
-      const expected = Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]]));
-      return toolOk({
-        ok: true,
-        projectId: project.id,
-        revision: snap.revision,
-        task,
-        expected,
-        acceptance: snap.acceptanceByTask[task.id] || '未填写',
-        handoff: buildTaskHandoff(snap.data, task.id, snap.acceptanceByTask),
+      return withClaimsSnapshot(project, (snap) => {
+        const task = snap.data.tasks.find((item) => item.id === input.id.trim());
+        if (!task) return toolErr(404, 'TASK_NOT_FOUND', `找不到任务 ${input.id}`);
+        const expected = Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]]));
+        const acceptanceByTask = extractAcceptanceByTask(snap.raw);
+        const claim = evaluateClaims(snap.config, snap.data, snap.now).claims[task.id] ?? null;
+        return toolOk({
+          ok: true,
+          projectId: project.id,
+          revision: snap.revision,
+          task,
+          expected,
+          claim,
+          acceptance: acceptanceByTask[task.id] || '未填写',
+          handoff: buildTaskHandoff(snap.data, task.id, acceptanceByTask, { claim, projectId: project.id }),
+        });
       });
     }
 
     if (name === 'plan_update_task') {
-      const allowedKeys = new Set(['projectId', 'id', 'expected', 'status', 'progress', 'actualStart', 'actualEnd', 'today']);
+      const allowedKeys = new Set(['projectId', 'id', 'expected', 'status', 'progress', 'actualStart', 'actualEnd', 'today', 'actor', 'leaseId']);
       const forbidden = Object.keys(input).filter((key) => !allowedKeys.has(key));
       if (forbidden.length) {
         return toolErr(403, 'FORBIDDEN_FIELDS', `普通执行工具仅允许更新任务执行字段（status/progress/actualStart/actualEnd），拒绝字段：${forbidden.join(', ')}`);
@@ -273,47 +291,56 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
         return toolErr(400, 'INVALID_DATE', 'actualEnd 必须是 YYYY-MM-DD 或 null');
       }
 
-      const snap = readPlanSnapshot(project);
-      if (snap.error) return toolErr(400, 'PLAN_UNAVAILABLE', snap.error.join('; '));
-      const beforeErrors = validate(snap.data);
-      if (beforeErrors.length) return toolErr(400, 'PLAN_INVALID', beforeErrors.join('; '), { errors: beforeErrors });
-      const task = snap.data.tasks.find((item) => item.id === input.id.trim());
-      if (!task) return toolErr(404, 'TASK_NOT_FOUND', `找不到任务 ${input.id}`);
+      return withClaimsSnapshot(project, (snap) => {
+        const task = snap.data.tasks.find((item) => item.id === input.id.trim());
+        if (!task) return toolErr(404, 'TASK_NOT_FOUND', `找不到任务 ${input.id}`);
+        const claim = checkTaskWrite(snap.config, task, input, snap.now);
 
-      const currentExpected = Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]]));
-      if (EXEC_FIELDS.some((key) => task[key] !== input.expected[key])) {
-        return toolErr(409, 'CONFLICT', '任务已被其他智能体或操作修改，请重新读取后再提交', { current: currentExpected, revision: snap.revision });
-      }
+        const currentExpected = Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]]));
+        if (EXEC_FIELDS.some((key) => task[key] !== input.expected[key])) {
+          return toolErr(409, 'CONFLICT', '任务已被其他智能体或操作修改，请重新读取后再提交', { current: currentExpected, revision: snap.revision });
+        }
 
-      task.status = input.status;
-      task.progress = input.progress;
-      if (task.status === 'todo') {
-        task.actualStart = null;
-        task.actualEnd = null;
-      } else {
-        task.actualStart = input.actualStart !== undefined ? input.actualStart : (task.actualStart || today);
-        task.actualEnd = input.actualEnd !== undefined
-          ? input.actualEnd
-          : (task.status === 'done' ? (task.actualEnd || today) : null);
-      }
+        task.status = input.status;
+        task.progress = input.progress;
+        if (task.status === 'todo') {
+          task.actualStart = null;
+          task.actualEnd = null;
+        } else {
+          task.actualStart = input.actualStart !== undefined ? input.actualStart : (task.actualStart || today);
+          task.actualEnd = input.actualEnd !== undefined
+            ? input.actualEnd
+            : (task.status === 'done' ? (task.actualEnd || today) : null);
+        }
 
-      const afterErrors = validate(snap.data);
-      if (afterErrors.length) return toolErr(400, 'PLAN_INVALID', afterErrors.join('; '), { errors: afterErrors });
-      const output = updatePlanMarkdown(snap.raw, [task]);
-      if (!verifyTaskUpdates(output, [task])) return toolErr(500, 'WRITEBACK_VERIFY_FAILED', '无法安全写回任务进度，计划未修改');
-      if (output !== snap.raw && !writePlanAtomically(project.planPath, output, snap.revision)) {
-        return toolErr(409, 'CONFLICT', '写入瞬间计划已变化，请重新读取后再提交');
-      }
-      return toolOk({
-        ok: true,
-        projectId: project.id,
-        revision: revisionOf(output),
-        task,
-        expected: Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]])),
+        const afterErrors = validate(snap.data);
+        if (afterErrors.length) return toolErr(400, 'PLAN_INVALID', afterErrors.join('; '), { errors: afterErrors });
+        const output = updatePlanMarkdown(snap.raw, [task]);
+        if (!verifyTaskUpdates(output, [task])) return toolErr(500, 'WRITEBACK_VERIFY_FAILED', '无法安全写回任务进度，计划未修改');
+        if (output !== snap.raw && !atomicReplaceFile(snap.planPath, output, snap.revision)) {
+          return toolErr(409, 'CONFLICT', '写入瞬间计划已变化，请重新读取后再提交');
+        }
+        const completion = task.status === 'done' ? completeClaim(snap.planPath, snap.config, claim, snap.now) : {};
+        return toolOk({
+          ok: true,
+          projectId: project.id,
+          revision: revisionOf(output),
+          task,
+          expected: Object.fromEntries(EXEC_FIELDS.map((key) => [key, task[key]])),
+          ...completion,
+        });
       });
     }
 
     return toolErr(404, 'UNKNOWN_TOOL', `未知工具：${name}`);
+  }
+
+  function callTool(name, args) {
+    try { return invokeTool(name, args); }
+    catch (error) {
+      if (error instanceof PlanLockError) return toolErr(error.status, error.code, error.message, error.details);
+      return toolErr(500, 'PLAN_OPERATION_FAILED', '无法完成计划操作');
+    }
   }
 
   function handleMessage(message) {

@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { createIntegrationService, createIssueAdapter } from '../server/integrations.mjs';
 import { issueApiBase } from '../server/issue-transport.mjs';
 import { parseFrontMatter, serializePlanMarkdown } from '../scripts/validate-plan.mjs';
+import { mutateClaims } from '../server/claim-service.mjs';
 
 const githubConfig = { provider: 'github', apiBase: 'https://api.github.com', repo: 'owner/tasks', enabled: true, token: 'TEST-ONLY-SECRET' };
 const githubIssue = (number, title, state = 'open', labels = [], body = '') => ({ number, title, state, labels, body, html_url: 'https://github.com/owner/tasks/issues/' + number });
@@ -87,6 +88,22 @@ test('changed remote state, issue binding or local plan invalidates preview with
   await assert.rejects(confirm(preview), { code: 'SYNC_PREVIEW_STALE' });
   assert.match(readPlan(project).raw, /Concurrent edit$/);
   assert.deepEqual(service.get(project.id).issueMap, {});
+});
+
+test('issue pulls skip a lease acquired after preview as well as an existing active lease', async (t) => {
+  const remote = [githubIssue(1, '[T-1] task', 'closed'), githubIssue(3, '[T-3] task', 'closed')];
+  const { project, service, readPlan } = await fixture(t, async () => ({ data: remote }));
+  service.save(project.id, githubConfig);
+  mutateClaims(project, { action: 'claim', id: 'T-3', actor: 'codex' }, '2026-11-18');
+  const preview = await service.synchronize(project, { direction: 'pull', dryRun: true });
+  assert.deepEqual(preview.proposedUpdates.map(({ id }) => id), ['T-1']);
+  assert.deepEqual(preview.skippedConflicts.map(({ id }) => id), ['T-3']);
+  mutateClaims(project, { action: 'claim', id: 'T-1', actor: 'codex' }, '2026-11-18');
+  const applied = await service.synchronize(project, { direction: 'pull', previewId: preview.previewId, expectedRevision: preview.expectedRevision });
+  assert.deepEqual(applied.updated, []);
+  assert.deepEqual(applied.skippedConflicts.map(({ id }) => id), ['T-3', 'T-1']);
+  assert.equal(readPlan(project).data.tasks[0].status, 'doing');
+  assert.equal(readPlan(project).data.tasks[2].status, 'todo');
 });
 
 test('push requires selected tasks or explicit allow-all, avoids duplicate creation, and preserves user labels and body', async (t) => {

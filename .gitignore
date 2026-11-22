@@ -2,4 +2,7 @@ plan/webhooks.json
 plan/workspaces.json
 capacity.json
 *.capacity.json
+claims.json
+*.claims.json
+*.lock/
 plan/integrations.json

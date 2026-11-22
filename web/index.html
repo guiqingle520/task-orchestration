@@ -173,10 +173,31 @@
             <ul id="todayReadyList" class="action-list"></ul>
           </div>
         </section>
-        <section class="card" id="loadCard" data-views="capacity"><h2>人员负载<small>每周并行峰值</small></h2><div id="load"></div></section>
+        <section class="card" id="loadCard" data-views="capacity"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><div id="load"></div></section>
         <section class="card" id="capacityCard" data-views="capacity">
           <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
           <div id="capacityMetrics" aria-live="polite"></div>
+        </section>
+        <section class="card m9-live-card" id="claimsLiveCard" data-views="capacity" aria-labelledby="claimsLiveTitle">
+          <div class="card-head">
+            <div>
+              <h2 id="claimsLiveTitle">在岗执行动态与负责人名录<small id="claimsProjectTag">当前项目</small></h2>
+            </div>
+            <div class="snapshot-controls">
+              <button type="button" class="btn-sm" id="manageRosterBtn">管理负责人名录</button>
+              <button type="button" class="btn-sm" id="refreshClaimsBtn">刷新动态</button>
+            </div>
+          </div>
+          <p id="claimsLiveNotice" class="empty" role="status"></p>
+          <div id="claimsLiveBody" aria-live="polite"></div>
+          <details id="claimsLiveEvents" class="m9-events-details" hidden>
+            <summary id="claimsLiveEventsSummary">近期协同事件与审计流</summary>
+            <div class="seg m9-event-tabs" role="group" aria-label="切换事件流类型">
+              <button type="button" id="claimsActivityTab" data-event-tab="activity" class="on" aria-pressed="true" aria-controls="claimsLiveEventList">常规协同</button>
+              <button type="button" id="claimsAuditTab" data-event-tab="audit" aria-pressed="false" aria-controls="claimsLiveEventList">接管与强制解锁审计</button>
+            </div>
+            <div id="claimsLiveEventList" aria-live="polite"></div>
+          </details>
         </section>
         <section class="card" id="reports" data-views="tools">
           <h2>进度报告</h2>
@@ -208,7 +229,7 @@
     <div id="plannerFields" class="planner-fields" hidden>
       <label>任务编号 <input id="planTaskId" type="text" readonly></label>
       <label>任务标题 <input id="planTaskTitle" type="text" maxlength="120"></label>
-      <label>负责人 <input id="planTaskOwner" type="text" maxlength="60"></label>
+      <label>负责人 <input id="planTaskOwner" type="text" maxlength="60" list="ownerRosterList" placeholder="可从名录选择或直接输入新负责人"></label>
       <div class="picker-field"><label for="planTaskMilestone">所属里程碑</label> <select id="planTaskMilestone"></select></div>
       <div class="field-row">
         <label>计划开始 <input id="planTaskStart" type="date"></label>
@@ -216,10 +237,12 @@
       </div>
       <label>前置依赖 <input id="planTaskDeps" type="text" placeholder="如 T-1, T-2（无依赖留空）"></label>
       <label>变更原因 <input id="planChangeReason" type="text" placeholder="必填：说明新增、拆分或改期原因"></label>
+      <label id="planForceOverrideClaimsRow" hidden><input id="planForceOverrideClaims" type="checkbox"> 强制覆盖该任务上的活跃认领锁（记录到审计日志）</label>
     </div>
     <div id="execFields">
       <label>状态 <select id="taskStatus"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></label>
       <label>进度 (%) <input id="taskProgress" type="number" min="0" max="100" step="1" required></label>
+      <label id="taskActorRow">执行人标识（持有认领锁时必填） <input id="taskExecActor" type="text" maxlength="120" list="ownerRosterList" placeholder="如 codex、antigravity 或成员名（无锁可留空）"></label>
     </div>
     <p id="taskMessage" role="status"></p>
     <div class="dialog-actions">
@@ -238,6 +261,7 @@
     <ul id="planEditChanges" class="plan-edit-list" aria-label="日期变更"></ul>
     <ul id="planEditConflicts" class="plan-edit-list plan-conflicts" aria-label="排期冲突"></ul>
     <label id="planCascadeRow" hidden><input id="planCascade" type="checkbox"> 同时顺延受影响的任务</label>
+    <label id="planEditForceClaimsRow" hidden><input id="planEditForceClaims" type="checkbox"> 强制覆盖受影响任务的活跃认领锁（记录到审计日志）</label>
     <label>变更原因 <input id="planEditReason" type="text" required minlength="2"></label>
     <p id="planEditMessage" role="status"></p>
     <div class="dialog-actions">
@@ -359,15 +383,81 @@
   <div class="dialog-actions"><button type="button" data-close-m5="integrationDialog">关闭</button></div>
 </dialog>
 
-<dialog id="handoffDialog" class="task-dialog" aria-labelledby="handoffTitle">
+<datalist id="ownerRosterList"></datalist>
+
+<dialog id="handoffDialog" class="task-dialog m5-wide" aria-labelledby="handoffTitle">
   <h2 id="handoffTitle">任务开工说明</h2>
-  <p class="empty" id="handoffSubtitle">可直接复制给 Codex、Antigravity 或其他智能体继续执行，不会修改当前任务状态。</p>
+  <p class="empty" id="handoffSubtitle">支持「仅复制说明（不改状态）」或「认领并复制说明（防多人/多智能体抢单）」。</p>
+  <p id="handoffCurrentClaim" class="claim-banner" role="status"></p>
+  <div id="handoffClaimBox" class="handoff-claim-box">
+    <div class="field-row">
+      <label>认领执行人 (actor) <input id="handoffActor" type="text" maxlength="120" list="ownerRosterList" placeholder="如 codex、antigravity、alice"></label>
+      <label>执行人类型与默认租约
+        <select id="handoffActorKind">
+          <option value="agent">AI 智能体（默认 30 分钟）</option>
+          <option value="human">人类负责人（默认 8 小时 / 480 分钟）</option>
+        </select>
+      </label>
+    </div>
+    <div class="field-row">
+      <label>租约时长（分钟） <input id="handoffTtl" type="number" min="5" max="1440" step="5" value="30"></label>
+      <label>认领备注（可选） <input id="handoffNote" type="text" maxlength="200" placeholder="如 开始实现前端认领弹窗"></label>
+    </div>
+    <label><input id="handoffStartImmediately" type="checkbox"> 认领时同步将未开始任务设为「进行中 (10%)」（默认不改任务状态）</label>
+    <label id="handoffTakeoverRow" hidden><input id="handoffTakeoverStale" type="checkbox"> 确认接管已超时的租约（原执行者可能仍在本地工作）</label>
+  </div>
   <textarea id="handoffText" rows="11" readonly aria-label="任务开工说明预览"></textarea>
   <p id="handoffCopyStatus" role="status"></p>
   <div class="dialog-actions">
     <button type="button" id="closeHandoff">关闭</button>
-    <button type="button" id="copyHandoffBtn">复制说明</button>
+    <button type="button" id="copyHandoffBtn">仅复制说明（不改状态）</button>
+    <button type="button" id="claimAndCopyHandoffBtn">认领并复制说明</button>
   </div>
+</dialog>
+
+<dialog id="rosterDialog" class="task-dialog m5-wide" aria-labelledby="rosterDialogTitle">
+  <form id="rosterForm">
+    <h2 id="rosterDialogTitle">管理负责人与智能体名录</h2>
+    <p class="empty">自动聚合 plan.md 计划负责人与历史活跃执行人。可在此维护显示名、分类（人类成员默认 480m 租约 / AI 智能体默认 30m 租约）及新增协同负责人。</p>
+    <div id="rosterList" class="webhook-list"></div>
+    <div class="snapshot-controls">
+      <button type="button" id="addRosterMemberBtn">+ 新增负责人 / 智能体</button>
+      <label><input id="rosterCleanupOrphans" type="checkbox" checked> 保存时清理已删除任务的孤儿租约</label>
+    </div>
+    <p id="rosterDialogStatus" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeRosterDialog">取消</button>
+      <button type="submit" id="saveRosterBtn">保存名录</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="claimActionDialog" class="task-dialog" aria-labelledby="claimActionTitle">
+  <form id="claimActionForm">
+    <h2 id="claimActionTitle">任务认领与锁操作</h2>
+    <p id="claimActionSummary" class="empty"></p>
+    <div id="claimActionActorFields">
+      <label>执行人标识 (actor) <input id="claimActionActor" type="text" maxlength="120" list="ownerRosterList" required placeholder="如 codex、antigravity、alice"></label>
+      <div class="field-row" id="claimActionTypeRow">
+        <label>类型
+          <select id="claimActionKind">
+            <option value="agent">AI 智能体</option>
+            <option value="human">人类负责人</option>
+          </select>
+        </label>
+        <label>租约时长 (分钟) <input id="claimActionTtl" type="number" min="5" max="1440" value="30"></label>
+      </div>
+    </div>
+    <label id="claimActionNoteRow"><span id="claimActionNoteLabel">心跳 / 进展备注</span> <input id="claimActionNote" type="text" maxlength="300" placeholder="一句话说明当前进展"></label>
+    <label id="claimActionStartRow" hidden><input id="claimActionStartImmediately" type="checkbox"> 认领时同步将未开始任务转为「进行中 (10%)」</label>
+    <label id="claimActionTakeoverRow" hidden><input id="claimActionTakeoverConfirm" type="checkbox"> 我已知晓租约虽已过期，原执行者可能仍在工作，确认接管并生成新租约代次</label>
+    <label id="claimActionReasonRow" hidden>强制操作原因（必填，记入审计日志） <input id="claimActionReason" type="text" maxlength="300" placeholder="说明强制接管或强制解锁原因（至少 2 个字）"></label>
+    <p id="claimActionStatus" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeClaimAction">取消</button>
+      <button type="submit" id="submitClaimAction">确认</button>
+    </div>
+  </form>
 </dialog>
 
 <script type="module" src="app.js"></script>

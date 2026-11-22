@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { validate } from '../scripts/validate-plan.mjs';
 import { updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { IntegrationError, issueApiBase, sendIssueRequest } from './issue-transport.mjs';
+import { reconcileDoneClaims } from './claims.mjs';
+import { atomicReplaceFile, revisionOf, withPlanLock } from './plan-lock.mjs';
+import { claimState } from '../web/claims.js';
 
 export { IntegrationError };
 const fields = ['status', 'progress', 'actualStart', 'actualEnd'];
@@ -83,6 +86,20 @@ export function reconcileIssuesWithPlan(plan, remoteIssues, issueMap = {}, today
     if (fields.some((field) => before[field] !== after[field])) proposedUpdates.push({ id: task.id, number: issue.number, before, after });
   }
   return { proposedUpdates, skippedConflicts, bindings, remoteState };
+}
+
+function skipClaimedIssueUpdates(result, config, plan, now) {
+  const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
+  const bindings = { ...result.bindings };
+  const skippedConflicts = [...result.skippedConflicts];
+  const proposedUpdates = result.proposedUpdates.filter(({ id, number }) => {
+    const claim = config.claims[id];
+    if (!claim || claimState(claim, tasks.get(id), now) !== 'active') return true;
+    delete bindings[id];
+    skippedConflicts.push({ id, number, reason: '本地任务正处于活跃认领锁定中' });
+    return false;
+  });
+  return { ...result, bindings, skippedConflicts, proposedUpdates };
 }
 
 export function createIssueAdapter(config, transport = sendIssueRequest) {
@@ -249,29 +266,34 @@ export function createIntegrationService(root, { readPlan, transport = sendIssue
         if (dryRun !== true && (!preview || preview.signature !== signature || expectedRevision !== snapshot.revision)) throw stale();
         const remoteIssues = await adapter.list();
         const result = reconcileIssuesWithPlan(selection, remoteIssues, config.issueMap, today(), { projectId: id });
-        const current = stillCurrent();
         const fingerprint = hash(result.remoteState);
-        if (dryRun === true) {
-          const key = randomUUID();
-          if (previews.size >= 128) previews.delete(previews.keys().next().value);
-          previews.set(key, { signature, fingerprint, result, expires: now() + 5 * 60 * 1000 });
-          return { ok: true, direction, dryRun: true, previewId: key, expectedRevision: snapshot.revision,
-            proposedUpdates: result.proposedUpdates, skippedConflicts: result.skippedConflicts };
-        }
-        if (preview.expires <= now() || fingerprint !== preview.fingerprint) { previews.delete(previewId); throw stale(); }
-        previews.delete(previewId);
-        const verified = preview.result;
-        const changes = new Map(verified.proposedUpdates.map(({ id: taskId, after }) => [taskId, after]));
-        if (changes.size) {
-          const tasks = current.data.tasks.map((task) => ({ ...task, ...changes.get(task.id) }));
-          const output = updatePlanMarkdown(current.raw, tasks.filter(({ id: taskId }) => changes.has(taskId)));
-          if (validate({ ...current.data, tasks }).length || !verifyTaskUpdates(output, tasks)) throw new IntegrationError(400, '无法安全写回任务进度');
-          stillCurrent();
-          atomicWrite(project.planPath, output);
-        }
-        const issueMap = applyBindings(id, config, verified.bindings);
-        return { ok: true, direction, dryRun: false, created: [], updated: [...changes.keys()], issueMap: publicIssueMap(issueMap), skippedConflicts: verified.skippedConflicts,
-          touchedTasks: verified.proposedUpdates.map((item) => ({ id: item.id, beforeStatus: item.before.status, afterStatus: item.after.status })) };
+        return withPlanLock(project.planPath, (planPath) => {
+          const current = stillCurrent();
+          const checkedAt = now();
+          const claims = reconcileDoneClaims(planPath, current.data, checkedAt);
+          if (dryRun === true) {
+            const verified = skipClaimedIssueUpdates(result, claims, current.data, checkedAt);
+            const key = randomUUID();
+            if (previews.size >= 128) previews.delete(previews.keys().next().value);
+            previews.set(key, { signature, fingerprint, result: verified, expires: checkedAt + 5 * 60 * 1000 });
+            return { ok: true, direction, dryRun: true, previewId: key, expectedRevision: snapshot.revision,
+              proposedUpdates: verified.proposedUpdates, skippedConflicts: verified.skippedConflicts };
+          }
+          if (preview.expires <= checkedAt || fingerprint !== preview.fingerprint) { previews.delete(previewId); throw stale(); }
+          previews.delete(previewId);
+          const verified = skipClaimedIssueUpdates(preview.result, claims, current.data, checkedAt);
+          const changes = new Map(verified.proposedUpdates.map(({ id: taskId, after }) => [taskId, after]));
+          if (changes.size) {
+            const tasks = current.data.tasks.map((task) => ({ ...task, ...changes.get(task.id) }));
+            const output = updatePlanMarkdown(current.raw, tasks.filter(({ id: taskId }) => changes.has(taskId)));
+            if (validate({ ...current.data, tasks }).length || !verifyTaskUpdates(output, tasks)) throw new IntegrationError(400, '无法安全写回任务进度');
+            stillCurrent();
+            if (!atomicReplaceFile(planPath, output, revisionOf(current.raw))) throw stale();
+          }
+          const issueMap = applyBindings(id, config, verified.bindings);
+          return { ok: true, direction, dryRun: false, created: [], updated: [...changes.keys()], issueMap: publicIssueMap(issueMap), skippedConflicts: verified.skippedConflicts,
+            touchedTasks: verified.proposedUpdates.map((item) => ({ id: item.id, beforeStatus: item.before.status, afterStatus: item.after.status })) };
+        });
       }
 
       const issues = await adapter.list();

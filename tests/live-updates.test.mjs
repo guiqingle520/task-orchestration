@@ -6,8 +6,10 @@ import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { claimsPath, readClaims, writeClaims } from '../server/claims.mjs';
+import { withPlanLock } from '../server/plan-lock.mjs';
 
-test('plan changes and atomic replacements reach SSE clients and reconnects', { timeout: 15000 }, async (t) => {
+test('plan and claim changes reach isolated SSE clients, with coordination across all write paths', { timeout: 25000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'plan-live-'));
   for (const path of ['server', 'scripts', 'web', 'package.json']) {
     await cp(resolve(path), join(root, path), { recursive: true });
@@ -206,6 +208,99 @@ test('plan changes and atomic replacements reach SSE clients and reconnects', { 
   await firstEvents.read(); await secondEvents.read();
   await writeFile(secondFile, `${await readFile(secondFile, 'utf8')}\n`);
   assert.match(new TextDecoder().decode((await secondEvents.read()).value), /event: plan-change/);
+
+  const actor = 'PRIVATE-CLAIM-ACTOR';
+  const note = 'PRIVATE-HEARTBEAT-NOTE';
+  const reason = 'PRIVATE-AUDIT-REASON';
+  const rosterLabel = 'PRIVATE-ROSTER-LABEL';
+  const saveClaims = (body) => postJson('/api/claims?project=second', body);
+  const readProjectClaims = async (id) => (await fetch(`${base}/api/claims?project=${id}`)).json();
+  const beforeClaim = await readFile(secondFile, 'utf8');
+  const claimed = await saveClaims({ action: 'claim', id: secondTask.id, actor, actorKind: 'agent', note });
+  assert.equal(claimed.status, 200, await claimed.clone().text());
+  const { claim } = await claimed.json();
+  assert.match(new TextDecoder().decode((await secondEvents.read()).value), /event: plan-change/);
+  assert.equal(await readFile(secondFile, 'utf8'), beforeClaim);
+  assert.equal((await readProjectClaims('second')).claims[secondTask.id].leaseId, claim.leaseId);
+  assert.deepEqual((await readProjectClaims('alternate')).claims, {});
+  const heartbeatNote = 'PRIVATE-MCP-SSE-HEARTBEAT';
+  const heartbeat = execFileSync(process.execPath, ['--input-type=module', '-e', [
+    "import { createMcpService } from './server/mcp.mjs';",
+    'const mcp = createMcpService(process.argv[1]);',
+    "console.log(JSON.stringify(mcp.callTool('plan_heartbeat_task', JSON.parse(process.argv[2])).structuredContent));",
+  ].join('\n'), secondRoot, JSON.stringify({ id: secondTask.id, actor, leaseId: claim.leaseId, note: heartbeatNote })], { encoding: 'utf8' });
+  assert.equal(JSON.parse(heartbeat).claim.note, heartbeatNote);
+  assert.match(new TextDecoder().decode((await secondEvents.read()).value), /event: plan-change/);
+  assert.equal((await readProjectClaims('second')).claims[secondTask.id].note, heartbeatNote);
+  assert.equal(await readFile(secondFile, 'utf8'), beforeClaim);
+
+  const assertWritten = await (await fetch(`${base}/api/plan?project=second`)).json();
+  const taskExpected = Object.fromEntries(['status', 'progress', 'actualStart', 'actualEnd'].map((key) => [key, assertWritten.data.tasks[0][key]]));
+  const update = { id: secondTask.id, expected: taskExpected, status: 'doing', progress: 80 };
+  const legacyWrite = await postJson('/api/task?project=second', update);
+  assert.equal(legacyWrite.status, 409);
+  assert.equal((await legacyWrite.json()).code, 'TASK_LOCKED_BY_CLAIM');
+  assert.equal((await postJson('/api/task?project=second', { ...update, actor, leaseId: claim.leaseId })).status, 200);
+
+  const paths = ['.githooks', 'scripts', 'server', 'web', 'package.json'];
+  await Promise.all(paths.map((path) => cp(resolve(path), join(secondRoot, path), { recursive: true })));
+  const beforeGit = await readFile(secondFile, 'utf8');
+  const subject = 'done ' + secondTask.id;
+  git('-c', 'core.hooksPath=.githooks', 'commit', '--allow-empty', '-m', subject);
+  assert.equal(await readFile(secondFile, 'utf8'), beforeGit);
+  execFileSync(process.execPath, ['scripts/sync-git-progress.mjs'], { cwd: secondRoot, stdio: 'pipe' });
+  assert.equal(await readFile(secondFile, 'utf8'), beforeGit);
+  const synchronized = await (await fetch(`${base}/api/sync-git?project=second`, { method: 'POST' })).json();
+  assert.deepEqual(synchronized.skippedLockedTasks, [{ id: secondTask.id, actor, leaseId: claim.leaseId }]);
+  assert.equal(await readFile(secondFile, 'utf8'), beforeGit);
+
+  const currentPlan = await (await fetch(`${base}/api/plan?project=second`)).json();
+  const amended = { ...currentPlan.data, expectedRevision: currentPlan.revision, reason };
+  amended.tasks.find(({ id }) => id === secondTask.id).owner = 'new-owner';
+  const rejectedOverride = await postJson('/api/plan/save?project=second', amended);
+  assert.equal(rejectedOverride.status, 409);
+  assert.equal((await rejectedOverride.json()).code, 'ACTIVE_CLAIM_CONFLICT');
+  const rejectedDelete = await postJson('/api/plan/save?project=second', {
+    ...amended, tasks: amended.tasks.filter(({ id }) => id !== secondTask.id)
+      .map((task) => ({ ...task, deps: task.deps.filter((id) => id !== secondTask.id) })),
+  });
+  assert.equal(rejectedDelete.status, 409);
+  assert.equal((await rejectedDelete.json()).code, 'ACTIVE_CLAIM_CONFLICT');
+  assert.equal(await readFile(secondFile, 'utf8'), beforeGit);
+  // Earlier checks deliberately use a front matter comment, which the planner cannot rewrite.
+  await writeFile(secondFile, beforeGit.replace(' # keep the ID comment', ''));
+  const { revision: rewritableRevision } = await (await fetch(`${base}/api/plan?project=second`)).json();
+  const planReason = 'Change planned owner';
+  const forced = await postJson('/api/plan/save?project=second', {
+    ...amended, expectedRevision: rewritableRevision, reason: planReason, forceOverrideClaims: true,
+  });
+  assert.equal(forced.status, 200, await forced.clone().text());
+  assert.equal((await readProjectClaims('second')).claims[secondTask.id], undefined);
+  const reserved = await (await saveClaims({ action: 'claim', id: secondTask.id, actor, note })).json();
+  assert.equal((await saveClaims({ action: 'release', id: secondTask.id, actor: 'coordinator', leaseId: reserved.claim.leaseId, force: true, reason })).status, 200);
+  assert.equal((await saveClaims({ action: 'roster', roster: [{ id: actor, label: rosterLabel, kind: 'agent' }] })).status, 200);
+  const liveClaim = await (await saveClaims({ action: 'claim', id: secondTask.id, actor, note })).json();
+  withPlanLock(secondFile, () => {
+    const config = readClaims(secondFile);
+    config.claims['T-999'] = { ...config.claims[secondTask.id], taskId: 'T-999' };
+    writeClaims(secondFile, config);
+  });
+  assert.equal((await readProjectClaims('second')).claims['T-999'].state, 'orphaned');
+  assert.equal((await saveClaims({ action: 'roster', cleanupOrphans: true })).status, 200);
+  const cleanedClaims = await readProjectClaims('second');
+  assert.equal(cleanedClaims.claims['T-999'], undefined);
+  assert.equal(cleanedClaims.claims[secondTask.id].leaseId, liveClaim.claim.leaseId);
+  assert.equal(cleanedClaims.configuredRoster[0].label, rosterLabel);
+  assert.equal(claimsPath(alternateFile), join(secondRoot, 'plan', 'alternate.md.claims.json'));
+
+  for (const masked of [false, true]) {
+    const response = await postJson('/api/export/html?project=second', { today: '2026-11-18', maskOwners: masked, stripInternalNotes: masked });
+    assert.equal(response.status, 200);
+    const { html } = await response.json();
+    for (const value of [actor, note, heartbeatNote, reason, rosterLabel, liveClaim.claim.leaseId]) {
+      assert.equal(html.includes(value), false, 'offline HTML contains sidecar data');
+    }
+  }
   assert.equal(await Promise.race([firstEvents.read().then(() => 'unexpected'), delay(400).then(() => 'isolated')]), 'isolated');
   assert.equal((await fetch(`${base}/api/projects`, { headers: { origin: 'https://unrelated.example' } })).status, 403);
   const configure = (projects) => fetch(`${base}/api/webhooks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channels: [{ id: 'test', name: 'Test', type: 'generic', url: 'https://example.com/secret', enabled: false, autoAlert: false, projects }] }) });

@@ -762,10 +762,10 @@ tasks:
     start: 2026-11-23
     end: 2026-11-24
     deps: []
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
   - id: T-68
     title: 扩展 MCP 认领、代次心跳与释放工具并统一全写入口租约冲突拦截
     owner: codex
@@ -773,10 +773,10 @@ tasks:
     start: 2026-11-25
     end: 2026-11-26
     deps: [T-67]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
   - id: T-69
     title: 提供多负责人与任务认领 REST 接口并扩展侧车文件变更 SSE 实时广播
     owner: codex
@@ -784,10 +784,10 @@ tasks:
     start: 2026-11-25
     end: 2026-11-26
     deps: [T-67]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
   - id: T-70
     title: 升级多负责人选择器并在今日行动与开工说明弹窗实现分步认领与复制交互
     owner: antigravity
@@ -795,10 +795,10 @@ tasks:
     start: 2026-11-26
     end: 2026-11-27
     deps: [T-67, T-69]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
   - id: T-71
     title: 在负载页构建执行动态与名录面板并在甘特任务列与详情区接入锁状态与接管交互
     owner: antigravity
@@ -806,10 +806,10 @@ tasks:
     start: 2026-11-30
     end: 2026-12-01
     deps: [T-69, T-70]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
   - id: T-72
     title: 补齐跨进程并发抢单、代次接管、Git 同步防绕过与离线导出脱敏回归测试
     owner: codex
@@ -817,10 +817,10 @@ tasks:
     start: 2026-12-02
     end: 2026-12-02
     deps: [T-68, T-71]
-    status: todo
-    progress: 0
-    actualStart: null
-    actualEnd: null
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
 ---
 
 # 计划说明
@@ -958,3 +958,5 @@ tasks:
 | T-72 | 复用 `tests/mcp.test.mjs` 的 `mkdtemp + spawn stdio` 模式补齐自动化回归测试套件并保持全量测试通过：1) 双子进程同步屏障并发认领同一任务，必有一方 `200`、一方 `409`；2) A 租约超时 → B 接管生成新 `leaseId` → A（含同名实例）延迟发心跳、写进度、释放均返回 `409 LEASE_SUPERSEDED` 且 B 租约完好；3) `startImmediately` 与 `done` 释放的故障注入半成功状态及重启幂等自愈；4) `git commit` / `plan:sync` 与 `savePlan` 对他人 `active` 持锁任务的防绕过拦截与孤儿租约安全渲染；5) `POST /api/export/html` 在开启/关闭脱敏时导出 HTML 源码均零侧车数据泄漏。 |
 
 变更记录:2026-11-22 规划者根据用户确认与本地 Multica 方案头脑风暴智囊团（GUIQ-26）五视角评审结论，新增里程碑 M9（2026-12-02 交付）与任务 T-67 ~ T-72，并产出详细技术设计规范 `docs/M9_DESIGN.md`。
+变更记录:2026-11-22 codex 完成 T-67、T-68、T-69 核心锁服务、MCP/REST 认领接口与 5 大边界测试。
+变更记录:2026-11-22 antigravity 完成 T-70、T-71；实现开放式多负责人选择与录入、开工说明「仅复制（不改状态）」与「认领并复制」分步反馈、甘特图固定任务列紧凑锁徽章、任务详情认领/心跳/超时接管/强制解锁交互以及「负载与工时」页在岗执行动态与负责人名录面板（含双轨协同事件流与历史回放只读隔离），全量 76 项自动化测试通过。

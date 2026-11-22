@@ -9,6 +9,7 @@ import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 import { installTimelineView } from './timeline-view.js';
 import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
 import { buildTaskHandoff, readyTasks } from './task-handoff.js';
+import { defaultClaimTtl, inferActorKind } from './claims.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -46,6 +47,25 @@ let webhookProjects = [];
 const taskFilterFields = { query: 'taskQuery', status: 'filterStatus', owner: 'filterOwner', milestone: 'filterMilestone' };
 let taskFilters = {};
 let todayActionOwner = '';
+
+// M9: 多负责人名录与认领租约状态 (T-70 & T-71)
+let claimsSnapshot = null;
+let claimsSequence = 0;
+let claimsFetchFailed = false;
+let handoffTaskId = null;
+let handoffPending = false;
+let rosterDraft = [];
+let rosterBusy = false;
+let claimActionState = null;
+let liveEventTab = 'activity';
+const PREFERRED_ACTOR_KEY = 'task-orchestration.preferredActor';
+function getPreferredActor() {
+  try { return localStorage.getItem(PREFERRED_ACTOR_KEY) || ''; } catch { return ''; }
+}
+function setPreferredActor(actor) {
+  if (!actor) return;
+  try { localStorage.setItem(PREFERRED_ACTOR_KEY, actor); } catch { /* 忽略 */ }
+}
 
 // T-29: 时间机器与基线幽灵条状态
 let isTimeMachine = false;
@@ -190,8 +210,19 @@ function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
   $('planTaskEnd').value = editingTask.end;
   $('planTaskDeps').value = (editingTask.deps || []).join(', ');
   $('planChangeReason').value = prefillReason;
+  const activeClaim = !isNew ? getTaskClaim(editingTask.id) : null;
+  if ($('planForceOverrideClaimsRow')) {
+    $('planForceOverrideClaimsRow').hidden = !(plannerMode && !isNew && activeClaim?.state === 'active');
+  }
+  if ($('planForceOverrideClaims')) $('planForceOverrideClaims').checked = false;
   $('taskStatus').value = editingTask.status;
   $('taskProgress').value = editingTask.progress;
+  if ($('taskExecActor')) {
+    $('taskExecActor').value = activeClaim?.state === 'active'
+      ? activeClaim.actor
+      : (getPreferredActor() || editingTask.owner || '');
+  }
+  if ($('taskActorRow')) $('taskActorRow').hidden = isNew;
   $('taskMessage').textContent = '';
   $('taskDialog').showModal?.();
 }
@@ -341,7 +372,7 @@ $('validatePlan').addEventListener('click', async () => {
   } catch { if (taskEditBase === base) $('taskMessage').textContent = '无法连接服务'; }
 });
 
-async function saveFullPlan(base, nextData, reason, statusEl, isCurrent) {
+async function saveFullPlan(base, nextData, reason, statusEl, isCurrent, forceOverrideClaims = false) {
   const response = await fetch(apiUrl('/api/plan/save', base.projectId), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -351,11 +382,20 @@ async function saveFullPlan(base, nextData, reason, statusEl, isCurrent) {
       milestones: nextData.milestones,
       tasks: nextData.tasks,
       reason,
+      ...(forceOverrideClaims ? { forceOverrideClaims: true } : {}),
     }),
   });
   const result = await response.json();
   if (!isCurrent()) return false;
   if (!response.ok) {
+    if (response.status === 409) void refresh();
+    if (result.code === 'ACTIVE_CLAIM_CONFLICT') {
+      const holders = (result.conflicts || []).map((c) => `${c.id}（${c.actor}）`).join('、');
+      if (statusEl === $('taskMessage') && $('planForceOverrideClaimsRow')) $('planForceOverrideClaimsRow').hidden = false;
+      if (statusEl === $('planEditMessage') && $('planEditForceClaimsRow')) $('planEditForceClaimsRow').hidden = false;
+      statusEl.textContent = `${result.message}${holders ? '：' + holders : ''}。请先释放认领锁或勾选「强制覆盖活跃认领锁」后再保存。`;
+      return false;
+    }
     statusEl.textContent = response.status === 409 ? '计划已变化，请关闭弹窗后重新打开，再应用你的更改。' : result.message || '保存失败';
     return false;
   }
@@ -400,6 +440,8 @@ function openPlanConfirmation(base, operation) {
   const day = task && operation.type === 'move' ? new Date((toDay(task.start) + operation.deltaDays) * 86400000) : null;
   $('planGestureDate').value = day && !Number.isNaN(day.getTime()) ? day.toISOString().split('T')[0] : operation.targetDate || '';
   $('planCascade').checked = false;
+  if ($('planEditForceClaimsRow')) $('planEditForceClaimsRow').hidden = true;
+  if ($('planEditForceClaims')) $('planEditForceClaims').checked = false;
   $('planEditReason').value = '';
   $('planGestureDate').disabled = $('planCascade').disabled = $('planEditReason').disabled = false;
   updatePlanConfirmation();
@@ -418,7 +460,7 @@ $('planEditForm').addEventListener('submit', async (event) => {
   edit.pending = true;
   $('savePlanEdit').disabled = $('planGestureDate').disabled = $('planCascade').disabled = $('planEditReason').disabled = true;
   try {
-    const saved = await saveFullPlan(edit.base, edit.preview.nextPlan, $('planEditReason').value.trim(), $('planEditMessage'), isCurrent);
+    const saved = await saveFullPlan(edit.base, edit.preview.nextPlan, $('planEditReason').value.trim(), $('planEditMessage'), isCurrent, Boolean($('planEditForceClaims')?.checked));
     if (saved && isCurrent()) {
       selected = edit.operation.taskId || edit.operation.toId;
       if (last.revision === edit.base.revision && saved.data && saved.revision) {
@@ -471,7 +513,7 @@ $('taskForm').addEventListener('submit', async (event) => {
       ? [...base.data.tasks, updatedTask]
       : base.data.tasks.map((t) => (t.id === editingTask.id ? updatedTask : t));
     try {
-      const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent);
+      const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent, Boolean($('planForceOverrideClaims')?.checked));
       if (!ok) return;
       $('taskDialog').close?.();
       selected = updatedTask.id;
@@ -480,11 +522,28 @@ $('taskForm').addEventListener('submit', async (event) => {
     return;
   }
   const expected = Object.fromEntries(['status', 'progress', 'actualStart', 'actualEnd'].map((key) => [key, editingTask[key]]));
+  const execActor = $('taskExecActor')?.value.trim() || '';
+  const activeClaim = getTaskClaim(editingTask.id);
+  const payload = {
+    id: editingTask.id,
+    expected,
+    status: $('taskStatus').value,
+    progress: Number($('taskProgress').value),
+    ...(execActor ? { actor: execActor } : {}),
+    ...(activeClaim?.state === 'active' && activeClaim.actor === execActor ? { leaseId: activeClaim.leaseId } : {}),
+  };
   try {
-    const response = await fetch(apiUrl('/api/task', base.projectId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: editingTask.id, expected, status: $('taskStatus').value, progress: Number($('taskProgress').value) }) });
+    const response = await fetch(apiUrl('/api/task', base.projectId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     const result = await response.json();
     if (!isCurrent()) return;
-    if (!response.ok) { $('taskMessage').textContent = result.message; return; }
+    if (!response.ok) {
+      if (execActor) setPreferredActor(execActor);
+      const holder = result.claim?.actor ? `（当前持锁人：${result.claim.actor}）` : '';
+      $('taskMessage').textContent = (result.message || '保存失败') + holder;
+      if (response.status === 409) void refresh();
+      return;
+    }
+    if (execActor) setPreferredActor(execActor);
     $('taskDialog').close?.();
     await refresh();
   } catch { if (isCurrent()) $('taskMessage').textContent = '保存失败，无法连接服务'; }
@@ -533,7 +592,7 @@ $('splitTaskBtn').addEventListener('click', async () => {
     }
   }
   try {
-    const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent);
+    const ok = await saveFullPlan(base, { ...base.data, tasks: nextTasks }, reason, $('taskMessage'), isCurrent, Boolean($('planForceOverrideClaims')?.checked));
     if (!ok) return;
     $('taskDialog').close?.();
     selected = secondTask.id;
@@ -596,7 +655,8 @@ function bindEventsStream() {
 function setPlanAvailable(available) {
   const isWritable = available && !isTimeMachine;
   for (const id of ['plannerMode', 'timelineFocusPlanner', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
-    'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn']) {
+    'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn',
+    'manageRosterBtn', 'refreshClaimsBtn']) {
     if ($(id)) $(id).disabled = !isWritable;
   }
   if ($('burndownScope')) $('burndownScope').disabled = !available;
@@ -609,21 +669,29 @@ function clearPlan() {
   historyCommits = [];
   historyCache.clear();
   baselinePlanData = null;
+  claimsSnapshot = null;
+  claimsFetchFailed = false;
+  claimsSequence++;
   last = null;
   resetPlanGesture();
   planConfirmation = null;
   selected = null;
   editingTask = taskEditBase = milestoneEditBase = null;
   todayActionOwner = '';
-  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog']) if ($(id)?.open) $(id).close();
+  if ($('claimsLiveEvents')) {
+    $('claimsLiveEvents').hidden = true;
+    $('claimsLiveEvents').open = false;
+  }
+  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog', 'rosterDialog', 'claimActionDialog']) if ($(id)?.open) $(id).close();
   for (const id of ['kpis', 'gctrl', 'timelineActions', 'timelineOptions', 'timelineRange', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
-    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks', 'todayFollowList', 'todayReadyList']) {
+    'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks', 'todayFollowList', 'todayReadyList',
+    'claimsLiveBody', 'claimsLiveEventList', 'ownerRosterList']) {
     if ($(id)) {
       $(id).innerHTML = '';
       renderedMarkup.delete($(id));
     }
   }
-  for (const id of ['project', 'overviewProject', 'pill', 'riskCount', 'todayFollowCount', 'todayReadyCount']) if ($(id)) $(id).textContent = '';
+  for (const id of ['project', 'overviewProject', 'pill', 'riskCount', 'todayFollowCount', 'todayReadyCount', 'claimsLiveNotice']) if ($(id)) $(id).textContent = '';
   if ($('pill')) $('pill').className = 'pill';
   $('taskFilters').hidden = $('follow-up').hidden = true;
   setPlanAvailable(false);
@@ -1001,6 +1069,32 @@ document.addEventListener('click', (e) => {
     openHandoffModal(handoff.dataset.handoffTask);
     return;
   }
+  const claimOpBtn = e.target.closest('[data-claim-op]');
+  if (claimOpBtn && last && !isTimeMachine) {
+    openClaimActionDialog(claimOpBtn.dataset.claimOp, claimOpBtn.dataset.claimTask);
+    return;
+  }
+  if (e.target.closest('[data-refresh-claims]') && last && !isTimeMachine) {
+    void refreshClaims();
+    return;
+  }
+  if (e.target.closest('[data-cleanup-orphans]') && last && !isTimeMachine) {
+    void (async () => {
+      try {
+        await callClaimsApi({ action: 'roster', cleanupOrphans: true });
+        await refreshClaims();
+      } catch (err) {
+        if ($('claimsLiveNotice')) $('claimsLiveNotice').textContent = err.message || '清理孤儿租约失败';
+      }
+    })();
+    return;
+  }
+  const evTab = e.target.closest('[data-event-tab]');
+  if (evTab && last && claimsSnapshot && !isTimeMachine && !claimsFetchFailed) {
+    liveEventTab = evTab.dataset.eventTab;
+    renderClaimEvents(claimsSnapshot);
+    return;
+  }
   const stage = e.target.closest('[data-show-stage]');
   if (stage && last) {
     setTaskFilters({ milestone: stage.dataset.showStage });
@@ -1087,7 +1181,8 @@ function resolveWorkspaceView(hash) {
     case '#deliveries':
     case '#risk-panel': return VIEW_META.delivery;
     case '#capacityCard':
-    case '#loadCard': return VIEW_META.capacity;
+    case '#loadCard':
+    case '#claimsLiveCard': return VIEW_META.capacity;
     case '#reports':
     case '#snapshots-panel':
     case '#integrations': return VIEW_META.tools;
@@ -1178,6 +1273,7 @@ async function refresh() {
   last = refreshed;
   setPlanAvailable(true);
   m5Panels.syncLive(last);
+  void refreshClaims();
   $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
   const linked = pendingTaskLink;
   pendingTaskLink = null;
@@ -1222,6 +1318,7 @@ function renderAll(scroll) {
   renderRisks(data, m);
   renderMilestones(m);
   renderLoad(m);
+  renderClaimsLiveCard(data, m);
   for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterOwner', 'filterMilestone', 'todayActionOwner']) syncSearchPicker($(id));
   if (scroll && selected) document.querySelector('.lrow.sel, .lgroup.sel')?.scrollIntoView({ block: 'nearest' });
 }
@@ -1234,8 +1331,73 @@ function setTaskFilters(filters = {}) {
   }
 }
 
+function getMergedOwners(data) {
+  const map = new Map();
+  for (const task of data?.tasks || []) {
+    if (task.owner && !map.has(task.owner)) {
+      const kind = inferActorKind(task.owner);
+      map.set(task.owner, { id: task.owner, label: task.owner, kind, defaultTtlMinutes: defaultClaimTtl(kind) });
+    }
+  }
+  for (const entry of claimsSnapshot?.roster || []) {
+    if (entry?.id) map.set(entry.id, entry);
+  }
+  return [...map.values()].sort((a, b) => a.id.localeCompare(b.id, 'zh-CN'));
+}
+
+function getTaskClaim(taskId) {
+  if (isTimeMachine || !claimsSnapshot?.claims) return null;
+  const claim = claimsSnapshot.claims[taskId];
+  if (!claim || claim.state === 'done_pending_reconcile') return null;
+  return claim;
+}
+
+function formatOwnerAndActor(task, claim) {
+  if (isTimeMachine) return `负责人：${task.owner}`;
+  if (!claim || (claim.state !== 'active' && claim.state !== 'stale')) return `负责人：${task.owner}`;
+  const timeTxt = claim.state === 'active'
+    ? `剩余 ${claim.remainingMinutes ?? claim.ttlMinutes}m`
+    : `已超时 ${claim.overdueMinutes ?? 0}m · 可接管`;
+  if (claim.actor === task.owner) {
+    return claim.state === 'active'
+      ? `${task.owner} 执行中（${timeTxt}）`
+      : `负责人：${task.owner} · ⚠️ 租约${timeTxt}`;
+  }
+  return `负责人：${task.owner} · ${claim.state === 'active' ? '执行中' : '⚠️ 租约超时'}：${claim.actor}（${timeTxt}）`;
+}
+
+function renderClaimChip(task) {
+  if (isTimeMachine) return `<span class="claim-chip history">历史回放，不显示实时认领</span>`;
+  if (claimsFetchFailed) return `<span class="claim-chip unknown">认领状态未知</span>`;
+  const claim = getTaskClaim(task.id);
+  const preferred = getPreferredActor();
+  if (!claim) return `<span class="claim-chip unclaimed">待认领</span>`;
+  if (claim.state === 'active') {
+    const mine = preferred && claim.actor === preferred;
+    const label = mine ? `我认领 (${claim.actor})` : `由 ${claim.actor} 认领`;
+    return `<span class="claim-chip ${mine ? 'mine' : 'active'}" title="${esc(claim.note || `到期时间 ${claim.expiresAt}`)}">🔒 ${esc(label)} · 剩余 ${claim.remainingMinutes ?? claim.ttlMinutes}m</span>`;
+  }
+  if (claim.state === 'stale') {
+    return `<span class="claim-chip stale" title="原执行者 ${esc(claim.actor)} 租约已过期，可能仍在工作">⚠️ ${esc(claim.actor)} 已超时 ${claim.overdueMinutes ?? 0}m · 可接管</span>`;
+  }
+  return '';
+}
+
+function updateOwnerDatalist(data) {
+  const listEl = $('ownerRosterList');
+  if (!listEl) return;
+  const owners = getMergedOwners(data);
+  const markup = owners.map((o) => {
+    const typeLabel = o.kind === 'human' ? '人类负责人' : 'AI 智能体';
+    const text = o.label && o.label !== o.id ? `${o.label} (${typeLabel})` : typeLabel;
+    return `<option value="${esc(o.id)}" label="${esc(text)}"></option>`;
+  }).join('');
+  if (listEl.innerHTML !== markup) listEl.innerHTML = markup;
+}
+
 function updateTaskFilters(data) {
   $('taskFilters').hidden = $('follow-up').hidden = false;
+  updateOwnerDatalist(data);
   const optionList = (key, entries, all) => {
     const el = $(taskFilterFields[key]);
     const chosen = taskFilters[key] ?? '';
@@ -1245,8 +1407,8 @@ function updateTaskFilters(data) {
     if (el.innerHTML !== markup) el.innerHTML = markup;
     el.value = chosen;
   };
-  const owners = [...new Set(data.tasks.map(task => task.owner))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  optionList('owner', owners.map(owner => [owner, owner]), '全部负责人');
+  const owners = getMergedOwners(data);
+  optionList('owner', owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id]), '全部负责人');
   optionList('milestone', data.milestones.map(({ id, name }) => [id, `${id} · ${name}`]), '全部里程碑');
 }
 
@@ -1316,12 +1478,139 @@ async function copyTaskLink() {
   }
 }
 
+async function refreshClaims() {
+  if (!last || isTimeMachine || portfolioActive) return;
+  const { projectId, epoch } = last;
+  const seq = ++claimsSequence;
+  try {
+    const response = await fetch(apiUrl('/api/claims', projectId));
+    const data = await response.json();
+    if (!last || seq !== claimsSequence || epoch !== workspaceEpoch || last.projectId !== projectId) return;
+    if (!response.ok || !data || typeof data.claims !== 'object') throw new Error(data?.message || '无法读取认领状态');
+    claimsSnapshot = data;
+    claimsFetchFailed = false;
+    updateOwnerDatalist(last.data);
+    updateTaskFilters(last.data);
+    renderTodayActions(last.data, last.m);
+    if (!planGesture) renderGantt(last.data, last.m);
+    renderDetail(last.data, last.m);
+    renderClaimsLiveCard(last.data, last.m);
+    for (const id of ['filterOwner', 'todayActionOwner']) syncSearchPicker($(id));
+    if ($('handoffDialog')?.open && handoffTaskId) syncHandoffDialogState(handoffTaskId, false);
+  } catch {
+    if (!last || seq !== claimsSequence || epoch !== workspaceEpoch) return;
+    claimsFetchFailed = true;
+    renderTodayActions(last.data, last.m);
+    renderDetail(last.data, last.m);
+    renderClaimsLiveCard(last.data, last.m);
+  }
+}
+
+async function callClaimsApi(payload) {
+  if (!last || isTimeMachine) throw new Error('历史回放模式下不支持修改认领状态');
+  const { projectId, epoch } = last;
+  const response = await fetch(apiUrl('/api/claims', projectId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  let data;
+  try { data = await response.json(); } catch { data = null; }
+  if (!response.ok || !data || data.ok === false) {
+    if (response.status === 409 && last?.projectId === projectId && epoch === workspaceEpoch) void refresh();
+    const err = new Error(data?.message || (response.status === 404 ? '当前运行的服务不支持认领接口，请重启服务' : '认领操作未成功'));
+    err.status = response.status;
+    err.code = data?.code;
+    err.claim = data?.claim;
+    throw err;
+  }
+  return data;
+}
+
+function resolveMemberKindAndTtl(actor) {
+  const trimmed = (actor || '').trim();
+  const member = getMergedOwners(last?.data).find((item) => item.id === trimmed);
+  const kind = member?.kind || inferActorKind(trimmed || 'codex');
+  const ttl = member?.defaultTtlMinutes || defaultClaimTtl(kind);
+  return { kind, ttl };
+}
+
+function buildHandoffTextForTask(taskId, overrideClaim = undefined) {
+  if (!last) return '';
+  const claim = overrideClaim !== undefined ? overrideClaim : getTaskClaim(taskId);
+  const claimContext = isTimeMachine ? undefined : { projectId: last.projectId, claim };
+  return buildTaskHandoff(last.data, taskId, last.acceptanceByTask || {}, claimContext) || '';
+}
+
+function syncHandoffDialogState(taskId, resetInputs = true) {
+  if (!last) return;
+  const task = last.data.tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const claim = getTaskClaim(taskId);
+  const text = buildHandoffTextForTask(taskId, claim);
+  if ($('handoffText')) $('handoffText').value = text;
+  const banner = $('handoffCurrentClaim');
+  const box = $('handoffClaimBox');
+  const claimBtn = $('claimAndCopyHandoffBtn');
+  if (isTimeMachine) {
+    if (banner) {
+      banner.textContent = '历史回放，不显示实时认领；仅支持只读复制当时版本的开工说明。';
+      banner.className = 'claim-banner history';
+    }
+    if (box) box.hidden = true;
+    if (claimBtn) claimBtn.hidden = true;
+    return;
+  }
+  if (box) box.hidden = task.status === 'done';
+  if (claimBtn) {
+    claimBtn.hidden = task.status === 'done';
+    claimBtn.disabled = handoffPending || task.status === 'done';
+  }
+  if (banner) {
+    if (task.status === 'done') {
+      banner.textContent = '该任务已完成，无需认领，可直接复制说明。';
+      banner.className = 'claim-banner';
+    } else if (claimsFetchFailed) {
+      banner.textContent = '暂时无法读取实时认领状态，仍可复制说明或尝试认领。';
+      banner.className = 'claim-banner stale';
+    } else if (!claim) {
+      banner.textContent = `当前状态：待认领 · 计划负责人：${task.owner}`;
+      banner.className = 'claim-banner unclaimed';
+    } else if (claim.state === 'active') {
+      banner.textContent = `🔒 当前由 ${claim.actor} 认领执行中（剩余 ${claim.remainingMinutes ?? claim.ttlMinutes} 分钟，到期 ${new Date(claim.expiresAt).toLocaleTimeString()}）${claim.note ? ' · 备注：' + claim.note : ''}`;
+      banner.className = 'claim-banner active';
+    } else if (claim.state === 'stale') {
+      banner.textContent = `⚠️ ${claim.actor} 的租约已过期（超时 ${claim.overdueMinutes ?? 0} 分钟），原执行者可能仍在工作。若要换人接管请勾选下方「确认接管」。`;
+      banner.className = 'claim-banner stale';
+    }
+  }
+  if (resetInputs && $('handoffActor')) {
+    const defaultActor = claim?.state === 'active'
+      ? claim.actor
+      : (getPreferredActor() || task.owner || 'codex');
+    $('handoffActor').value = defaultActor;
+    const { kind, ttl } = resolveMemberKindAndTtl(defaultActor);
+    if ($('handoffActorKind')) $('handoffActorKind').value = claim?.actorKind || kind;
+    if ($('handoffTtl')) $('handoffTtl').value = claim?.ttlMinutes || ttl;
+    if ($('handoffNote')) $('handoffNote').value = claim?.note || '';
+    if ($('handoffStartImmediately')) $('handoffStartImmediately').checked = false;
+  }
+  const staleLeaseId = claim?.state === 'stale' ? claim.leaseId : '';
+  if ($('handoffTakeoverRow')) $('handoffTakeoverRow').hidden = !staleLeaseId;
+  const confirmation = $('handoffTakeoverStale');
+  if (confirmation) {
+    if (resetInputs || confirmation.dataset.leaseId !== staleLeaseId) confirmation.checked = false;
+    confirmation.dataset.leaseId = staleLeaseId;
+  }
+}
+
 function openHandoffModal(taskId) {
   if (!last) return;
-  const text = buildTaskHandoff(last.data, taskId, last.acceptanceByTask || {});
-  if (!text) return;
-  const field = $('handoffText');
-  if (field) field.value = text;
+  const task = last.data.tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  handoffTaskId = taskId;
+  handoffPending = false;
+  syncHandoffDialogState(taskId, true);
   if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '';
   $('handoffDialog')?.showModal?.();
 }
@@ -1329,9 +1618,9 @@ function openHandoffModal(taskId) {
 function renderTodayActions(data, m) {
   const ownerSelect = $('todayActionOwner');
   if (ownerSelect) {
-    const owners = [...new Set(data.tasks.map((task) => task.owner))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-    if (todayActionOwner && !owners.includes(todayActionOwner)) todayActionOwner = '';
-    const markup = [['', '全部负责人'], ...owners.map((owner) => [owner, owner])]
+    const owners = getMergedOwners(data);
+    if (todayActionOwner && !owners.some((o) => o.id === todayActionOwner)) todayActionOwner = '';
+    const markup = [['', '全部负责人'], ...owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id])]
       .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
     if (ownerSelect.innerHTML !== markup) ownerSelect.innerHTML = markup;
     ownerSelect.value = todayActionOwner;
@@ -1340,20 +1629,29 @@ function renderTodayActions(data, m) {
   const followItems = followUpTasks(data.tasks, m.today).filter(byOwner);
   const readyItems = readyTasks(data.tasks, m.today).filter(byOwner);
   const actionButtons = (task) => {
+    const claim = getTaskClaim(task.id);
     const edit = isTimeMachine ? '' : `<button type="button" data-quick-edit="${esc(task.id)}">更新进度</button>`;
-    return `<div class="action-item-buttons">${edit}<button type="button" data-handoff-task="${esc(task.id)}">复制开工说明</button></div>`;
+    const claimBtn = isTimeMachine ? ''
+      : claim?.state === 'stale'
+        ? `<button type="button" data-claim-op="takeover" data-claim-task="${esc(task.id)}">确认接管</button>`
+        : !claim
+          ? `<button type="button" data-claim-op="claim" data-claim-task="${esc(task.id)}">认领任务</button>`
+          : `<button type="button" data-claim-op="heartbeat" data-claim-task="${esc(task.id)}">续租/备注</button>`;
+    return `<div class="action-item-buttons">${edit}${claimBtn}<button type="button" data-handoff-task="${esc(task.id)}">复制开工说明</button></div>`;
   };
   if ($('todayFollowCount')) $('todayFollowCount').textContent = `${followItems.length} 项`;
   if ($('todayFollowList')) {
     renderMarkup($('todayFollowList'), followItems.map(({ task, priority, days }) => {
       const date = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天后到期`;
       const reason = priority === 0 && days > 7 ? `阻塞中 · 计划截止 ${task.end}` : date;
+      const claim = getTaskClaim(task.id);
+      const ownerLine = formatOwnerAndActor(task, claim);
       return `<li class="action-item">
         <div class="action-item-main">
           <span class="status-chip ${priority === 0 ? 'red' : 'yellow'}">${['阻塞', '逾期', '即将到期'][priority]}</span>
           <div class="action-item-info">
             <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
-            <span class="action-item-reason">${esc(task.owner)} · ${esc(reason)} · 当前 ${task.progress}%</span>
+            <span class="action-item-reason">${esc(ownerLine)} · ${esc(reason)} · 当前 ${task.progress}% ${renderClaimChip(task)}</span>
           </div>
         </div>
         ${actionButtons(task)}
@@ -1364,12 +1662,14 @@ function renderTodayActions(data, m) {
   if ($('todayReadyList')) {
     renderMarkup($('todayReadyList'), readyItems.map(({ task, availability, reason }) => {
       const [label, tone] = availability === 'now' ? ['现在可开工', 'green'] : ['可提前开始', 'blue'];
+      const claim = getTaskClaim(task.id);
+      const ownerLine = formatOwnerAndActor(task, claim);
       return `<li class="action-item">
         <div class="action-item-main">
           <span class="status-chip ${tone}">${label}</span>
           <div class="action-item-info">
             <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
-            <span class="action-item-reason">${esc(task.owner)} · ${esc(reason)} · 计划 ${task.start} 开始</span>
+            <span class="action-item-reason">${esc(ownerLine)} · ${esc(reason)} · 计划 ${task.start} 开始 ${renderClaimChip(task)}</span>
           </div>
         </div>
         ${actionButtons(task)}
@@ -1596,9 +1896,15 @@ function renderGantt(data, m) {
         <span class="gmeta">${filtering ? `${r.g.tasks.length}/${ms.taskCount}` : ms.taskCount} 个任务 · ${Math.round(ms.progress)}%</span>${delayBadge(ms)}</div>`;
     }
     const t = r.t, i = I[t.id];
+    const claim = getTaskClaim(t.id);
+    const claimBadge = !isTimeMachine && claim?.state === 'active'
+      ? `<span class="gantt-claim-badge active" aria-label="已由 ${esc(claim.actor)} 认领，剩余 ${claim.remainingMinutes ?? claim.ttlMinutes} 分钟" title="已由 ${esc(claim.actor)} 认领 · 剩余 ${claim.remainingMinutes ?? claim.ttlMinutes}m${claim.note ? ' · ' + esc(claim.note) : ''}">🔒 ${esc(claim.actor)}</span>`
+      : !isTimeMachine && claim?.state === 'stale'
+        ? `<span class="gantt-claim-badge stale" aria-label="${esc(claim.actor)} 租约已超时 ${claim.overdueMinutes ?? 0} 分钟，可接管" title="${esc(claim.actor)} 租约已超时 ${claim.overdueMinutes ?? 0}m · 可接管">⚠️ 超时</span>`
+        : '';
     return `<div class="lrow ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" title="${esc(t.title)}">
       <div class="t"><span class="title">${esc(t.title)}</span></div>
-      <div class="s"><span class="id ${i.critical ? 'crit' : ''}" title="${i.critical ? '关键路径' : ''}">${i.critical ? '★ ' : ''}${esc(t.id)}</span><span class="task-owner" title="${esc(t.owner)}">${esc(t.owner)}</span><span class="task-status ${t.status === 'blocked' ? 'red' : i.overdue ? 'yellow' : ''}">${t.status !== 'blocked' && i.overdue ? '逾期' : STATUS[t.status]} · ${t.progress}%</span></div></div>`;
+      <div class="s"><span class="id ${i.critical ? 'crit' : ''}" title="${i.critical ? '关键路径' : ''}">${i.critical ? '★ ' : ''}${esc(t.id)}</span><span class="task-owner" title="计划负责人 ${esc(t.owner)}">${esc(t.owner)}</span>${claimBadge}<span class="task-status ${t.status === 'blocked' ? 'red' : i.overdue ? 'yellow' : ''}">${t.status !== 'blocked' && i.overdue ? '逾期' : STATUS[t.status]} · ${t.progress}%</span></div></div>`;
   }).join('');
 
   // 时间线:条带与柱
@@ -1690,19 +1996,59 @@ function renderGantt(data, m) {
   scrollToTodayNext = false;
 }
 
+function renderClaimTimes({ claimedAt, heartbeatAt, expiresAt }) {
+  return [['首次认领时间', claimedAt], ['最后心跳时间', heartbeatAt], ['到期时间', expiresAt]].map(([label, value]) => {
+    const time = new Date(value ?? '');
+    const text = Number.isFinite(time.getTime())
+      ? `<time datetime="${time.toISOString()}">${esc(time.toLocaleString())}</time>`
+      : '—';
+    return `<span>${label} ${text}</span>`;
+  }).join('');
+}
+
 function renderDetail(data, m) {
   const el = $('detail');
   const t = data.tasks.find((x) => x.id === selected);
   if (t) {
     const i = m.info[t.id];
+    const claim = getTaskClaim(t.id);
     const cmts = (last.commits?.[t.id] || []).slice(-3).map((c) => `<code>${esc(c.hash)}</code> ${esc(c.subject)}(${esc(c.date)})`).join(' · ');
     const handoffBtn = `<button type="button" data-handoff-task="${esc(t.id)}">复制开工说明</button>`;
+    const claimDetailLine = isTimeMachine
+      ? `<div class="detail-claim-box"><span class="claim-chip history">历史回放，不显示实时认领</span></div>`
+      : claimsFetchFailed
+        ? `<div class="detail-claim-box"><span class="claim-chip unknown">认领状态未知</span> <button type="button" class="btn-sm" data-refresh-claims>重试读取</button></div>`
+        : t.status === 'done'
+          ? `<div class="detail-claim-box"><span class="empty">认领状态：任务已完成（无需认领锁）</span></div>`
+          : !claim
+            ? `<div class="detail-claim-box"><span class="claim-chip unclaimed">待认领</span> <span>当前无活跃执行锁</span> <button type="button" class="btn-sm" data-claim-op="claim" data-claim-task="${esc(t.id)}">认领任务</button></div>`
+            : claim.state === 'active'
+              ? `<div class="detail-claim-box"><span class="claim-chip active">🔒 ${esc(claim.actor)} 执行中</span>
+                <span>类型：${claim.actorKind === 'human' ? '人类负责人' : 'AI 智能体'} · 剩余 ${claim.remainingMinutes ?? claim.ttlMinutes} 分钟 · 代次 <code>${esc(claim.leaseId.slice(0, 8))}</code></span>
+                ${renderClaimTimes(claim)}
+                ${claim.note ? `<span class="detail-claim-note">最新心跳备注：${esc(claim.note)}</span>` : ''}
+                <div class="detail-claim-actions">
+                  <button type="button" class="btn-sm" data-claim-op="heartbeat" data-claim-task="${esc(t.id)}">发送心跳/备注</button>
+                  <button type="button" class="btn-sm" data-claim-op="release" data-claim-task="${esc(t.id)}">释放认领锁</button>
+                  <button type="button" class="btn-sm" data-claim-op="force_takeover" data-claim-task="${esc(t.id)}">强制接管</button>
+                  <button type="button" class="btn-sm" data-claim-op="force_release" data-claim-task="${esc(t.id)}">强制解锁</button>
+                </div></div>`
+              : `<div class="detail-claim-box"><span class="claim-chip stale">⚠️ ${esc(claim.actor)} 租约已超时 ${claim.overdueMinutes ?? 0} 分钟</span>
+                <span>原执行者可能仍在本地工作 · 代次 <code>${esc(claim.leaseId.slice(0, 8))}</code></span>
+                ${renderClaimTimes(claim)}
+                ${claim.note ? `<span class="detail-claim-note">最后心跳备注：${esc(claim.note)}</span>` : ''}
+                <div class="detail-claim-actions">
+                  <button type="button" class="btn-sm" data-claim-op="takeover" data-claim-task="${esc(t.id)}">确认接管任务</button>
+                  <button type="button" class="btn-sm" data-claim-op="heartbeat" data-claim-task="${esc(t.id)}">原持有人续租</button>
+                  <button type="button" class="btn-sm" data-claim-op="force_release" data-claim-task="${esc(t.id)}">强制解锁</button>
+                </div></div>`;
     const editBtn = isTimeMachine ? `<br>${handoffBtn}` : `<br><button type="button" data-edit-task>${plannerMode ? '规划/拆分任务' : '编辑任务'}</button> ${handoffBtn} ${m5Panels.issueMarkup(t.id)}
       <button type="button" data-copy-task-link>复制任务链接</button> <span id="taskCopyMessage" role="status"></span>
       <input type="url" id="taskLinkFallback" class="task-link-fallback" aria-label="任务链接" readonly hidden>`;
-    renderMarkup(el, `<span class="detail-label">当前任务</span><b>${esc(t.id)} ${esc(t.title)}</b> · ${STATUS[t.status]} · 负责人 ${esc(t.owner)}<br>
+    const ownerInfo = formatOwnerAndActor(t, claim);
+    renderMarkup(el, `<span class="detail-label">当前任务</span><b>${esc(t.id)} ${esc(t.title)}</b> · ${STATUS[t.status]} · ${esc(ownerInfo)}<br>
       计划 ${t.start} ~ ${t.end}(应达 ${Math.round(i.expected)}%),实际 ${t.actualStart || '—'} ~ ${t.actualEnd || '—'}(完成 ${t.progress}%)<br>
-      依赖:${t.deps.length ? t.deps.join(', ') : '无'}${i.slip > 0 && t.status !== 'done' ? ` · <span class="red">预计延期 ${i.slip} 天(预计 ${fromDay(i.forecastEnd)} 完成)</span>` : ''}${i.critical ? ' · <span class="red">关键路径</span>' : ''}${cmts ? `<br>关联提交:${cmts}` : ''}${editBtn}`);
+      依赖:${t.deps.length ? t.deps.join(', ') : '无'}${i.slip > 0 && t.status !== 'done' ? ` · <span class="red">预计延期 ${i.slip} 天(预计 ${fromDay(i.forecastEnd)} 完成)</span>` : ''}${i.critical ? ' · <span class="red">关键路径</span>' : ''}${cmts ? `<br>关联提交:${cmts}` : ''}${claimDetailLine}${editBtn}`);
     return;
   }
   const ms = m.milestones.find((x) => x.id === selected);
@@ -1759,6 +2105,256 @@ function renderLoad(m) {
   }).join('')}</tr>`).join('');
   const suggestions = analysis.suggestions.map((s) => `<li>${esc(s.owner)}：${s.conflictDay} 出现冲突，可试将 ${esc(s.id)} 顺延至 ${s.start} ~ ${s.end}；需复核下游依赖和交付日期。</li>`).join('');
   $('load').innerHTML = `<div class="loadw"><table class="load"><tr><th>周起</th>${head}</tr>${rows}</table></div><div class="empty" style="font-size:12px;margin-top:6px">每周展示每日并行任务峰值；≥3 标红。</div>${suggestions ? `<ul class="load-suggestions">${suggestions}</ul>` : '<div class="empty">暂无资源冲突建议</div>'}`;
+}
+
+const EVENT_TYPE_LABELS = {
+  claim: '认领任务',
+  release: '主动释放',
+  complete_release: '完工自动释放',
+  auto_reconcile_done: '完工自愈清理',
+  cleanup_orphan: '清理孤儿租约',
+  takeover: '超时确认接管',
+  force_takeover: '强制接管',
+  force_release: '强制解锁',
+  force_plan_override: '规划强制覆盖',
+  plan_task_removed: '规划移除持锁任务',
+};
+
+function renderClaimsLiveCard(data, m) {
+  const bodyEl = $('claimsLiveBody');
+  const noticeEl = $('claimsLiveNotice');
+  if (!bodyEl) return;
+  const events = $('claimsLiveEvents');
+  if (events) events.hidden = isTimeMachine || claimsFetchFailed || !claimsSnapshot;
+  if ($('claimsProjectTag') && data?.project) $('claimsProjectTag').textContent = `当前项目：${data.project}`;
+  if (isTimeMachine) {
+    if (noticeEl) noticeEl.textContent = '历史回放，不显示实时认领。退出时间机器后可查看和管理当前在岗动态与负责人名录。';
+    renderMarkup(bodyEl, '');
+    return;
+  }
+  if (claimsFetchFailed) {
+    if (noticeEl) noticeEl.textContent = '暂时无法读取实时认领动态，请点击右上角「刷新动态」重试。';
+    renderMarkup(bodyEl, '<p class="empty">认领状态未知（离线或接口错误）</p>');
+    return;
+  }
+  if (!claimsSnapshot) {
+    if (noticeEl) noticeEl.textContent = '正在读取在岗执行动态…';
+    return;
+  }
+  const summary = claimsSnapshot.summary || { active: 0, stale: 0, orphaned: 0 };
+  const readyMap = new Set(readyTasks(data.tasks, m.today).map(({ task }) => task.id));
+  const taskMap = new Map(data.tasks.map((t) => [t.id, t]));
+  const allClaims = Object.values(claimsSnapshot.claims || {});
+  const activeOrStale = allClaims.filter((c) => c.state === 'active' || c.state === 'stale');
+  const orphanedClaims = allClaims.filter((c) => c.state === 'orphaned');
+
+  if (noticeEl) {
+    const parts = [
+      `在岗活跃认领 ${summary.active || 0} 项`,
+      `超时可接管 ${summary.stale || 0} 项`,
+      ...(summary.orphaned ? [`孤儿租约 ${summary.orphaned} 项`] : []),
+    ];
+    noticeEl.textContent = parts.join(' · ') + '（倒计时为近似提示，写操作以服务端代次校验为准）';
+  }
+
+  // 1) 在岗与超时认领列表
+  const claimsListMarkup = activeOrStale.length
+    ? `<ul class="live-claims-list">${activeOrStale.map((c) => {
+      const task = taskMap.get(c.taskId);
+      const isStale = c.state === 'stale';
+      const chip = isStale
+        ? `<span class="claim-chip stale">⚠️ 超时 ${c.overdueMinutes ?? 0}m · 可接管</span>`
+        : `<span class="claim-chip active">🔒 持锁中 · 剩余 ${c.remainingMinutes ?? c.ttlMinutes}m</span>`;
+      const ownerDiff = task && task.owner !== c.actor
+        ? `计划负责人：${esc(task.owner)} · 执行人：<b>${esc(c.actor)}</b>`
+        : `执行人：<b>${esc(c.actor)}</b>（${c.actorKind === 'human' ? '人类负责人' : 'AI 智能体'}）`;
+      const actions = isStale
+        ? `<button type="button" class="btn-sm" data-claim-op="takeover" data-claim-task="${esc(c.taskId)}">确认接管</button>
+           <button type="button" class="btn-sm" data-claim-op="heartbeat" data-claim-task="${esc(c.taskId)}">原持有人续租</button>
+           <button type="button" class="btn-sm" data-claim-op="force_release" data-claim-task="${esc(c.taskId)}">强制解锁</button>`
+        : `<button type="button" class="btn-sm" data-claim-op="heartbeat" data-claim-task="${esc(c.taskId)}">续租/备注</button>
+           <button type="button" class="btn-sm" data-claim-op="release" data-claim-task="${esc(c.taskId)}">释放</button>
+           <button type="button" class="btn-sm" data-claim-op="force_takeover" data-claim-task="${esc(c.taskId)}">强制接管</button>
+           <button type="button" class="btn-sm" data-claim-op="force_release" data-claim-task="${esc(c.taskId)}">强制解锁</button>`;
+      return `<li class="live-claim-item ${isStale ? 'stale' : 'active'}">
+        <div class="live-claim-head">
+          <button type="button" class="action-task-title" data-follow-task="${esc(c.taskId)}">${esc(c.taskId)} · ${esc(task?.title || '未知任务')}</button>
+          ${chip}
+        </div>
+        <div class="live-claim-meta">${ownerDiff} · 到期 ${esc(new Date(c.expiresAt).toLocaleTimeString())} · 代次 <code>${esc(c.leaseId.slice(0, 8))}</code></div>
+        ${c.note ? `<div class="live-claim-note">最新进展：${esc(c.note)}</div>` : ''}
+        <div class="action-item-buttons">${actions}</div>
+      </li>`;
+    }).join('')}</ul>`
+    : `<p class="empty">当前没有正在持锁或超时待接管的任务。可在「今日行动」或任务详情中认领任务。</p>`;
+
+  const orphanMarkup = orphanedClaims.length
+    ? `<div class="orphan-notice">
+        <span>发现 ${orphanedClaims.length} 项任务已不存在的孤儿租约：${orphanedClaims.map((c) => `${esc(c.taskId)}（${esc(c.actor)}）`).join('、')}</span>
+        <button type="button" class="btn-sm" data-cleanup-orphans>一键清理孤儿租约</button>
+      </div>`
+    : '';
+
+  // 2) 多负责人分类概览 (计划负责人 vs 当前在岗执行 actor)
+  const owners = getMergedOwners(data);
+  const rosterRows = owners.map((member) => {
+    const plannedTasks = data.tasks.filter((t) => t.owner === member.id && t.status !== 'done');
+    const activeExec = activeOrStale.filter((c) => c.actor === member.id && c.state === 'active');
+    const staleExec = activeOrStale.filter((c) => c.actor === member.id && c.state === 'stale');
+    const unclaimedReady = plannedTasks.filter((t) => readyMap.has(t.id) && !getTaskClaim(t.id));
+    const kindBadge = member.kind === 'human'
+      ? '<span class="roster-kind human">人类成员</span>'
+      : '<span class="roster-kind agent">AI 智能体</span>';
+    return `<tr>
+      <td><b>${esc(member.label || member.id)}</b>${member.label && member.label !== member.id ? ` <small class="empty">(${esc(member.id)})</small>` : ''}</td>
+      <td>${kindBadge}</td>
+      <td>${plannedTasks.length} 项</td>
+      <td>${activeExec.length ? `<b>${activeExec.length} 项</b>` : '0'}${staleExec.length ? ` <span class="yellow">(超时 ${staleExec.length})</span>` : ''}</td>
+      <td>${unclaimedReady.length} 项</td>
+      <td>${member.defaultTtlMinutes ?? defaultClaimTtl(member.kind)}m</td>
+    </tr>`;
+  }).join('');
+
+  renderMarkup(bodyEl, `
+    <div class="m9-live-section">
+      <h3>在岗认领与超时预警</h3>
+      ${orphanMarkup}
+      ${claimsListMarkup}
+    </div>
+    <div class="m9-live-section">
+      <h3>多负责人与智能体协同概览<small class="empty">计划归属按 owner 统计，在岗持锁按 actor 另计</small></h3>
+      <div class="loadw">
+        <table class="load m9-roster-table">
+          <thead><tr><th>负责人 / 智能体</th><th>分类</th><th>未完计划归属</th><th>当前持锁执行</th><th>待认领可开工</th><th>默认租约</th></tr></thead>
+          <tbody>${rosterRows || '<tr><td colspan="6" class="empty">暂无负责人</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  `);
+  renderClaimEvents(claimsSnapshot);
+}
+
+function renderClaimEvents({ activityLog = [], auditLog = [] }) {
+  const list = $('claimsLiveEventList');
+  if (!list) return;
+  const isAudit = liveEventTab === 'audit';
+  $('claimsLiveEventsSummary').textContent = `近期协同事件与审计流（常规 ${activityLog.length} 条 · 审计 ${auditLog.length} 条）`;
+  const activity = $('claimsActivityTab');
+  const audit = $('claimsAuditTab');
+  activity.textContent = `常规协同 (${activityLog.length})`;
+  audit.textContent = `接管与强制解锁审计 (${auditLog.length})`;
+  activity.classList.toggle('on', !isAudit);
+  audit.classList.toggle('on', isAudit);
+  activity.setAttribute('aria-pressed', String(!isAudit));
+  audit.setAttribute('aria-pressed', String(isAudit));
+  const events = (isAudit ? auditLog : activityLog).slice(-12).reverse();
+  const markup = events.length
+    ? `<ul class="live-events-list">${events.map((ev) => {
+      const label = EVENT_TYPE_LABELS[ev.type] || ev.type;
+      const timeStr = ev.at ? new Date(ev.at).toLocaleTimeString() : '';
+      const extra = [
+        ev.actor ? `操作人 ${ev.actor}` : '',
+        ev.previousActor ? `原持有人 ${ev.previousActor}` : '',
+        ev.reason ? `原因：${ev.reason}` : '',
+        ev.note ? `备注：${ev.note}` : '',
+      ].filter(Boolean).join(' · ');
+      return `<li><span class="ev-time">${esc(timeStr)}</span> <b>${esc(ev.taskId || '')}</b> <span class="ev-type">${esc(label)}</span> <span class="ev-meta">${esc(extra)}</span></li>`;
+    }).join('')}</ul>`
+    : `<p class="empty">${isAudit ? '暂无强制接管或强制解锁审计记录。' : '暂无近期协同动态记录。'}</p>`;
+  renderMarkup(list, markup);
+}
+
+function renderRosterDraft() {
+  const listEl = $('rosterList');
+  if (!listEl) return;
+  if (!rosterDraft.length) {
+    listEl.innerHTML = '<div class="empty">名录为空，点击下方「+ 新增负责人 / 智能体」添加。</div>';
+    return;
+  }
+  listEl.innerHTML = rosterDraft.map((item, idx) => `
+    <div class="webhook-item" data-roster-idx="${idx}">
+      <div class="webhook-row">
+        <input type="text" data-roster-field="id" value="${esc(item.id)}" placeholder="唯一标识，如 alice、codex#1" required maxlength="120">
+        <input type="text" data-roster-field="label" value="${esc(item.label || item.id)}" placeholder="显示名称，如 Alice (前端)" required maxlength="160">
+        <select data-roster-field="kind">
+          <option value="human" ${item.kind === 'human' ? 'selected' : ''}>人类负责人</option>
+          <option value="agent" ${item.kind === 'agent' ? 'selected' : ''}>AI 智能体</option>
+        </select>
+        <input type="number" data-roster-field="defaultTtlMinutes" value="${esc(item.defaultTtlMinutes ?? defaultClaimTtl(item.kind))}" min="5" max="1440" title="默认租约时长（分钟）" style="width:90px">
+        <button type="button" data-roster-remove="${idx}">移除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function syncRosterDraftFromDom() {
+  document.querySelectorAll('#rosterList [data-roster-idx]').forEach((row) => {
+    const idx = Number(row.dataset.rosterIdx);
+    const entry = rosterDraft[idx];
+    if (!entry) return;
+    entry.id = row.querySelector('[data-roster-field="id"]').value.trim();
+    entry.label = row.querySelector('[data-roster-field="label"]').value.trim() || entry.id;
+    entry.kind = row.querySelector('[data-roster-field="kind"]').value;
+    entry.defaultTtlMinutes = Number(row.querySelector('[data-roster-field="defaultTtlMinutes"]').value) || defaultClaimTtl(entry.kind);
+  });
+}
+
+function openRosterDialog() {
+  if (!last || isTimeMachine) return;
+  rosterDraft = getMergedOwners(last.data).map((item) => ({ ...item }));
+  renderRosterDraft();
+  if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = '';
+  $('rosterDialog')?.showModal?.();
+}
+
+function openClaimActionDialog(op, taskId) {
+  if (!last || isTimeMachine) return;
+  const task = last.data.tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const claim = getTaskClaim(taskId);
+  claimActionState = { op, taskId, claim, busy: false };
+
+  const titles = {
+    claim: `认领任务 ${task.id}`,
+    heartbeat: `续租与更新心跳备注 (${task.id})`,
+    release: `释放任务认领锁 (${task.id})`,
+    takeover: `确认接管超时租约 (${task.id})`,
+    force_takeover: `强制接管任务锁 (${task.id})`,
+    force_release: `强制解锁任务 (${task.id})`,
+  };
+  $('claimActionTitle').textContent = titles[op] || `任务锁操作 (${task.id})`;
+  $('claimActionSummary').textContent = claim
+    ? `当前持锁人：${claim.actor}（${claim.state === 'active' ? `剩余 ${claim.remainingMinutes ?? claim.ttlMinutes}m` : `已超时 ${claim.overdueMinutes ?? 0}m`}，代次 ${claim.leaseId.slice(0, 8)}）`
+    : `任务：${task.id} ${task.title} · 计划负责人：${task.owner}`;
+
+  const defaultActor = (op === 'heartbeat' || op === 'release') && claim
+    ? claim.actor
+    : (getPreferredActor() || task.owner || 'codex');
+  $('claimActionActor').value = defaultActor;
+  $('claimActionActor').readOnly = op === 'heartbeat' || op === 'release';
+  $('claimActionActorFields').hidden = op === 'force_release';
+  $('claimActionTypeRow').hidden = op === 'release' || op === 'force_release';
+
+  const { kind, ttl } = resolveMemberKindAndTtl(defaultActor);
+  $('claimActionKind').value = claim?.actorKind && op === 'heartbeat' ? claim.actorKind : kind;
+  $('claimActionTtl').value = claim?.ttlMinutes && op === 'heartbeat' ? claim.ttlMinutes : ttl;
+
+  $('claimActionNoteRow').hidden = op === 'release' || op === 'force_release';
+  $('claimActionNote').value = claim?.note && op === 'heartbeat' ? claim.note : '';
+  $('claimActionStartRow').hidden = !(op === 'claim' || op === 'takeover' || op === 'force_takeover') || task.status !== 'todo';
+  $('claimActionStartImmediately').checked = false;
+
+  $('claimActionTakeoverRow').hidden = op !== 'takeover';
+  $('claimActionTakeoverConfirm').checked = false;
+
+  const isForce = op === 'force_takeover' || op === 'force_release';
+  $('claimActionReasonRow').hidden = !isForce;
+  $('claimActionReason').required = isForce;
+  $('claimActionReason').value = '';
+
+  $('claimActionStatus').textContent = '';
+  $('submitClaimAction').disabled = false;
+  $('claimActionDialog')?.showModal?.();
 }
 
 $('tmExit')?.addEventListener('click', () => exitTimeMachine(true));
@@ -1828,16 +2424,242 @@ $('todayActionOwner')?.addEventListener('change', () => {
   if (last) renderTodayActions(last.data, last.m);
 });
 $('closeHandoff')?.addEventListener('click', () => $('handoffDialog')?.close?.());
+$('handoffDialog')?.addEventListener('close', () => { if (!$('handoffDialog').open) handoffTaskId = null; });
+$('handoffActor')?.addEventListener('input', () => {
+  const confirmation = $('handoffTakeoverStale');
+  if (confirmation) confirmation.checked = false;
+  const actor = ($('handoffActor')?.value || '').trim();
+  if (!actor) return;
+  const { kind, ttl } = resolveMemberKindAndTtl(actor);
+  if ($('handoffActorKind')) $('handoffActorKind').value = kind;
+  if ($('handoffTtl')) $('handoffTtl').value = ttl;
+});
+$('handoffActorKind')?.addEventListener('change', () => {
+  const kind = $('handoffActorKind').value;
+  if ($('handoffTtl')) $('handoffTtl').value = defaultClaimTtl(kind);
+});
 $('copyHandoffBtn')?.addEventListener('click', async () => {
   const text = $('handoffText')?.value || '';
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '已复制开工说明到剪贴板，任务状态未改动。';
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '已复制开工说明到剪贴板，任务状态与认领锁均未改动。';
   } catch {
     $('handoffText')?.focus?.();
     $('handoffText')?.select?.();
-    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '无法自动访问剪贴板，已选中文本，请按 Ctrl+C 复制。';
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '无法自动访问剪贴板，已选中文本，请按 Ctrl+C 复制（任务状态与认领锁未改动）。';
+  }
+});
+$('claimAndCopyHandoffBtn')?.addEventListener('click', async () => {
+  if (!last || isTimeMachine || !handoffTaskId || handoffPending) return;
+  const taskId = handoffTaskId;
+  const actor = ($('handoffActor')?.value || '').trim();
+  if (!actor) {
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '请先填写认领执行人 (actor) 标识。';
+    $('handoffActor')?.focus?.();
+    return;
+  }
+  const actorKind = $('handoffActorKind')?.value || inferActorKind(actor);
+  const ttlMinutes = Number($('handoffTtl')?.value) || defaultClaimTtl(actorKind);
+  const note = ($('handoffNote')?.value || '').trim();
+  const startImmediately = Boolean($('handoffStartImmediately')?.checked);
+  const currentClaim = getTaskClaim(taskId);
+  const confirmation = $('handoffTakeoverStale');
+  const takeoverStale = Boolean(confirmation?.checked && confirmation.dataset.leaseId === currentClaim?.leaseId);
+  if (currentClaim?.state === 'stale' && currentClaim.actor !== actor && !takeoverStale) {
+    if ($('handoffTakeoverRow')) $('handoffTakeoverRow').hidden = false;
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = `原执行人 ${currentClaim.actor} 的租约已过期（可能仍在工作），请勾选「确认接管已超时的租约」后再认领。`;
+    return;
+  }
+  handoffPending = true;
+  if ($('claimAndCopyHandoffBtn')) $('claimAndCopyHandoffBtn').disabled = true;
+  if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = '正在认领任务…';
+  try {
+    const res = await callClaimsApi({
+      action: 'claim',
+      id: taskId,
+      actor,
+      actorKind,
+      ttlMinutes,
+      ...(note ? { note } : {}),
+      startImmediately,
+      ...(currentClaim?.state === 'stale' ? { takeoverStale, expectedLeaseId: currentClaim.leaseId } : {}),
+    });
+    setPreferredActor(actor);
+    if (res.task && last) {
+      const idx = last.data.tasks.findIndex((t) => t.id === taskId);
+      if (idx >= 0) last.data.tasks[idx] = res.task;
+    }
+    await refreshClaims();
+    if (res.taskStarted) await refresh();
+    const activeClaim = { ...(res.claim || {}), state: 'active' };
+    const updatedText = buildHandoffTextForTask(taskId, activeClaim);
+    if ($('handoffText')) $('handoffText').value = updatedText;
+    const startNote = res.claimed_but_not_started
+      ? `（注意：${res.message || '已认领成功，但任务未自动转为进行中'}）`
+      : res.taskStarted
+        ? '（任务已同步设为进行中 10%）'
+        : '（任务保持原状态）';
+    try {
+      await navigator.clipboard.writeText(updatedText);
+      if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = `✓ 已由 ${actor} 认领成功并复制开工说明到剪贴板${startNote}。`;
+    } catch {
+      $('handoffText')?.focus?.();
+      $('handoffText')?.select?.();
+      if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = `✓ 已由 ${actor} 认领成功${startNote}，但复制失败（无法访问剪贴板）；已选中最新说明文本，请按 Ctrl+C 手动复制。`;
+    }
+  } catch (err) {
+    if ($('handoffCopyStatus')) $('handoffCopyStatus').textContent = `认领未成功：${err.message}`;
+    if (err.status !== 409) await refreshClaims();
+  } finally {
+    handoffPending = false;
+    if ($('claimAndCopyHandoffBtn')) $('claimAndCopyHandoffBtn').disabled = false;
+  }
+});
+
+// T-71: 名录管理弹窗与认领/续租/接管/释放操作弹窗
+$('manageRosterBtn')?.addEventListener('click', openRosterDialog);
+$('refreshClaimsBtn')?.addEventListener('click', () => { void refreshClaims(); });
+$('closeRosterDialog')?.addEventListener('click', () => $('rosterDialog')?.close?.());
+$('addRosterMemberBtn')?.addEventListener('click', () => {
+  syncRosterDraftFromDom();
+  rosterDraft.push({
+    id: `member-${rosterDraft.length + 1}`,
+    label: `成员 ${rosterDraft.length + 1}`,
+    kind: 'human',
+    defaultTtlMinutes: 480,
+  });
+  renderRosterDraft();
+});
+$('rosterList')?.addEventListener('change', (e) => {
+  if (e.target?.dataset?.rosterField === 'kind') {
+    const row = e.target.closest('[data-roster-idx]');
+    const ttlInput = row?.querySelector('[data-roster-field="defaultTtlMinutes"]');
+    if (ttlInput) ttlInput.value = defaultClaimTtl(e.target.value);
+  }
+});
+$('rosterList')?.addEventListener('click', (e) => {
+  const rm = e.target.closest('[data-roster-remove]');
+  if (!rm) return;
+  syncRosterDraftFromDom();
+  rosterDraft.splice(Number(rm.dataset.rosterRemove), 1);
+  renderRosterDraft();
+});
+$('rosterForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!last || isTimeMachine || rosterBusy) return;
+  syncRosterDraftFromDom();
+  rosterBusy = true;
+  if ($('saveRosterBtn')) $('saveRosterBtn').disabled = true;
+  if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = '正在保存名录…';
+  try {
+    await callClaimsApi({
+      action: 'roster',
+      roster: rosterDraft,
+      cleanupOrphans: Boolean($('rosterCleanupOrphans')?.checked),
+    });
+    $('rosterDialog')?.close?.();
+    await refreshClaims();
+  } catch (err) {
+    if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = err.message || '保存名录失败';
+  } finally {
+    rosterBusy = false;
+    if ($('saveRosterBtn')) $('saveRosterBtn').disabled = false;
+  }
+});
+
+$('closeClaimAction')?.addEventListener('click', () => $('claimActionDialog')?.close?.());
+$('claimActionDialog')?.addEventListener('close', () => { if (!$('claimActionDialog').open) claimActionState = null; });
+$('claimActionActor')?.addEventListener('input', () => {
+  const actor = ($('claimActionActor')?.value || '').trim();
+  if (!actor) return;
+  const { kind, ttl } = resolveMemberKindAndTtl(actor);
+  if ($('claimActionKind')) $('claimActionKind').value = kind;
+  if ($('claimActionTtl')) $('claimActionTtl').value = ttl;
+});
+$('claimActionKind')?.addEventListener('change', () => {
+  if ($('claimActionTtl')) $('claimActionTtl').value = defaultClaimTtl($('claimActionKind').value);
+});
+$('claimActionForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const state = claimActionState;
+  if (!state || !last || isTimeMachine || state.busy) return;
+  const { op, taskId, claim } = state;
+  const actor = ($('claimActionActor')?.value || '').trim();
+  const actorKind = $('claimActionKind')?.value || inferActorKind(actor || 'codex');
+  const ttlMinutes = Number($('claimActionTtl')?.value) || defaultClaimTtl(actorKind);
+  const note = ($('claimActionNote')?.value || '').trim();
+  const reason = ($('claimActionReason')?.value || '').trim();
+  const startImmediately = Boolean($('claimActionStartImmediately')?.checked);
+
+  if (op === 'takeover' && !$('claimActionTakeoverConfirm')?.checked) {
+    $('claimActionStatus').textContent = '请先勾选确认接管已超时的租约。';
+    return;
+  }
+  if ((op === 'force_takeover' || op === 'force_release') && reason.length < 2) {
+    $('claimActionStatus').textContent = '强制操作必须填写至少 2 个字的原因（将记入审计日志）。';
+    $('claimActionReason')?.focus?.();
+    return;
+  }
+
+  let payload;
+  if (op === 'claim' || op === 'takeover' || op === 'force_takeover') {
+    payload = {
+      action: 'claim',
+      id: taskId,
+      actor,
+      actorKind,
+      ttlMinutes,
+      ...(note ? { note } : {}),
+      startImmediately,
+      ...(op === 'takeover' ? { takeoverStale: true, ...(claim?.leaseId ? { expectedLeaseId: claim.leaseId } : {}) } : {}),
+      ...(op === 'force_takeover' ? { force: true, reason, ...(claim?.leaseId ? { expectedLeaseId: claim.leaseId } : {}) } : {}),
+    };
+  } else if (op === 'heartbeat') {
+    if (!claim?.leaseId) {
+      $('claimActionStatus').textContent = '当前任务无有效租约代次，请刷新后重新认领。';
+      return;
+    }
+    payload = {
+      action: 'heartbeat',
+      id: taskId,
+      actor: actor || claim.actor,
+      leaseId: claim.leaseId,
+      ttlMinutes,
+      note,
+    };
+  } else if (op === 'release' || op === 'force_release') {
+    payload = {
+      action: 'release',
+      id: taskId,
+      ...(actor ? { actor } : {}),
+      ...(claim?.leaseId ? { leaseId: claim.leaseId } : {}),
+      ...(op === 'force_release' ? { force: true, reason } : {}),
+    };
+  }
+
+  state.busy = true;
+  $('submitClaimAction').disabled = true;
+  $('claimActionStatus').textContent = '正在提交…';
+  try {
+    const res = await callClaimsApi(payload);
+    if (actor && op !== 'force_release') setPreferredActor(actor);
+    if (res.claimed_but_not_started) {
+      $('claimActionStatus').textContent = res.message || '已认领，但未能同步更新为进行中。';
+      await refreshClaims();
+      return;
+    }
+    $('claimActionDialog')?.close?.();
+    await refreshClaims();
+    if (res.taskStarted) await refresh();
+  } catch (err) {
+    $('claimActionStatus').textContent = err.message || '操作失败';
+    if (err.status !== 409) await refreshClaims();
+  } finally {
+    if (claimActionState === state) {
+      state.busy = false;
+      $('submitClaimAction').disabled = false;
+    }
   }
 });
 for (const [id, label] of Object.entries({
