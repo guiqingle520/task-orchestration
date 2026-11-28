@@ -28,6 +28,9 @@ milestones:
   - id: M9
     name: 多负责人与多智能体协同、任务认领锁与动态面板
     due: 2026-12-02
+  - id: M10
+    name: 发布 task-cockpit 1.2.0
+    due: 2026-12-04
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -821,6 +824,61 @@ tasks:
     progress: 100
     actualStart: 2026-11-22
     actualEnd: 2026-11-22
+  - id: T-73
+    title: 将 task-cockpit 的 npm 发布与 CLI 入口接入 M9 并保留升级兼容
+    owner: codex
+    milestone: M10
+    start: 2026-12-02
+    end: 2026-12-03
+    deps: [T-72]
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
+  - id: T-74
+    title: 验证 1.2.0 打包清单、独立安装和 M9 认领流程
+    owner: codex
+    milestone: M10
+    start: 2026-12-03
+    end: 2026-12-04
+    deps: [T-73]
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-22
+  - id: T-75
+    title: 发布 task-cockpit 1.2.0 并核验 npm 下载版本
+    owner: codex
+    milestone: M10
+    start: 2026-12-04
+    end: 2026-12-04
+    deps: [T-74]
+    status: done
+    progress: 100
+    actualStart: 2026-11-22
+    actualEnd: 2026-11-28
+  - id: T-76
+    title: 增强任务状态可视化区分：总览与今日行动显性展示进行中任务，甘特图与状态徽章区分四态并为进行中增加动态效果
+    owner: antigravity
+    milestone: M10
+    start: 2026-12-04
+    end: 2026-12-04
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-77
+    title: 筛选下拉框支持多选（状态/负责人/里程碑与今日行动负责人）：勾选多项组合筛选、一键清空并兼容旧单选调用
+    owner: antigravity
+    milestone: M10
+    start: 2026-12-04
+    end: 2026-12-04
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
 ---
 
 # 计划说明
@@ -960,3 +1018,16 @@ tasks:
 变更记录:2026-11-22 规划者根据用户确认与本地 Multica 方案头脑风暴智囊团（GUIQ-26）五视角评审结论，新增里程碑 M9（2026-12-02 交付）与任务 T-67 ~ T-72，并产出详细技术设计规范 `docs/M9_DESIGN.md`。
 变更记录:2026-11-22 codex 完成 T-67、T-68、T-69 核心锁服务、MCP/REST 认领接口与 5 大边界测试。
 变更记录:2026-11-22 antigravity 完成 T-70、T-71；实现开放式多负责人选择与录入、开工说明「仅复制（不改状态）」与「认领并复制」分步反馈、甘特图固定任务列紧凑锁徽章、任务详情认领/心跳/超时接管/强制解锁交互以及「负载与工时」页在岗执行动态与负责人名录面板（含双轨协同事件流与历史回放只读隔离），全量 76 项自动化测试通过。
+
+变更记录:2026-11-22 规划者按用户确认新增 M10 和 T-73 ~ T-75。沿用 npm 包 task-cockpit，将 M9 合入 1.2.0。计划日期按 M9 既定排期和工作日估算，codex 当日提前开始。正式发布取决于 npm 维护者账号完成授权。
+
+变更记录:2026-11-22 codex 完成 T-73，恢复原 npm CLI、兼容简写计划与负责人维护，并接入 M9 认领保护。全量自动化测试通过，开始 T-74 的打包安装验证。
+
+变更记录:2026-11-22 codex 完成 T-74。发布包共 72 个文件，80 项测试通过、1 项 Windows 专用测试跳过。Node.js 18 和 24 均验证从 1.1.1 安装升级、工作区与负责人数据保留、CLI 和 Web/MCP 共用认领。
+
+变更记录:2026-11-22 T-75 发布受阻。npm 登录校验返回 401，发布请求返回 404 权限类错误。待维护者登录后对同一已验证产物重试。
+变更记录:2026-11-28 规划者按用户反馈新增 M10 的 T-76（总览 KPI 与今日行动显性展示进行中任务，甘特图及状态徽章清晰区分未开始/进行中/阻塞/已完成四态，并为进行中增加呼吸光点与流动进度条动态效果），由 antigravity 当日开始实现。
+变更记录:2026-11-28 antigravity 完成 T-76；在项目总览 KPI 和今日行动新增「进行中」动态分组与呼吸胶囊，在甘特图区分未开始/进行中/阻塞/已完成四态视觉样式并增加进行中斜纹流动进度条（兼容 prefers-reduced-motion），全量自动化测试通过。
+变更记录:2026-11-28 规划者按用户反馈新增 M10 的 T-77（时间线状态/负责人/里程碑及今日行动负责人下拉框支持多选组合筛选，支持勾选多项与一键清空），由 antigravity 当日开始实现。
+变更记录:2026-11-28 antigravity 完成 T-77；filterTasks 与时间线状态/负责人/里程碑、今日行动负责人下拉框全面支持多选（带搜索、摘要标签与弹层内一键清空已选），保持向后兼容，全量前端与单元测试通过。
+变更记录:2026-11-28 antigravity 核验 task-cockpit@1.2.0 已在线上 npm 发布（标记 T-75 完成），并升级版本至 1.2.1 以包含 T-76（进行中动态与四态可视化）和 T-77（筛选多选下拉框）。

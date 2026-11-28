@@ -1,7 +1,50 @@
 {
-  "name": "task-orchestration",
-  "private": true,
+  "name": "task-cockpit",
+  "version": "1.2.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guiqingle520/task-orchestration.git"
+  },
+  "homepage": "https://github.com/guiqingle520/task-orchestration#readme",
+  "bugs": "https://github.com/guiqingle520/task-orchestration/issues",
+  "description": "Zero-dependency local task timeline cockpit and MCP server for AI agents and developers (reads plan/plan.md).",
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "task-cockpit": "bin/task-cockpit.mjs"
+  },
+  "files": [
+    "bin/",
+    "server/",
+    "web/",
+    "scripts/validate-plan.mjs",
+    "scripts/sync-git-progress.mjs",
+    "scripts/install-plugin.mjs",
+    "plan/plan.template.md",
+    "docs/PLAN_SPEC.md",
+    "docs/USER_MANUAL.md",
+    "docs/images/user-manual/",
+    ".agents/skills/generate-plan/SKILL.md",
+    "rules/AGENTS.md",
+    "assets/logo.svg",
+    "plugin.json",
+    "mcp_config.json",
+    "README.md",
+    "AGENTS.md",
+    "docs/M9_DESIGN.md"
+  ],
+  "keywords": [
+    "gantt",
+    "roadmap",
+    "project-management",
+    "mcp",
+    "ai-agent",
+    "markdown",
+    "task-orchestration"
+  ],
   "scripts": {
     "plan:check": "node scripts/validate-plan.mjs",
     "plan:sync": "node scripts/sync-git-progress.mjs",

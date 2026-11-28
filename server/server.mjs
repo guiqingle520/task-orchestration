@@ -17,20 +17,25 @@ import { createIntegrationService, IntegrationError } from './integrations.mjs';
 import { createFolderPicker, FolderPickerError } from './folder-picker.mjs';
 import { getClaimsSnapshot, mutateClaims, withClaimsSnapshot } from './claim-service.mjs';
 import { ClaimError, checkTaskWrite, claimsPath, completeClaim, recordClaimEvent, writeClaims } from './claims.mjs';
-import { atomicReplaceFile, PlanLockError, revisionOf } from './plan-lock.mjs';
+import { atomicReplaceFile, PlanLockError, revisionOf, withPlanLock } from './plan-lock.mjs';
+import {
+  applyOwnerRenameToRoster, mergeOwnersWithPlan, normalizeOwnerName, normalizeOwnersConfig,
+  OwnersConfigError, ownersPath, readOwnersConfig, writeOwnersConfig,
+} from './owners.mjs';
 import { claimState } from '../web/claims.js';
 import { compute, findNewDependencyConflicts } from '../web/metrics.js';
 import { buildReport, computeCapacityMetrics, computeTimelineDiff } from '../web/analysis.js';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
+const configRoot = process.env.TASK_COCKPIT_HOME || root;
 const webDir = join(root, 'web');
 const port = Number(process.env.PORT || 5173);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const clients = new Map();
 const workspaces = createWorkspaces(root);
 const pickFolder = createFolderPicker();
-const webhooks = createWebhookService(root);
-const integrations = createIntegrationService(root, {
+const webhooks = createWebhookService(configRoot);
+const integrations = createIntegrationService(configRoot, {
   today: dashboardToday,
   readPlan(project) {
     let current;
@@ -48,10 +53,11 @@ function watchProject(project) {
   let planChanged = false;
   const planName = basename(project.planPath);
   const claimsName = basename(claimsPath(project.planPath));
+  const ownersName = basename(ownersPath(project));
   try {
     const watcher = watch(dirname(project.planPath), (_event, filename) => {
       const name = filename && String(filename);
-      if (name && name !== planName && name !== claimsName) return;
+      if (name && name !== planName && name !== claimsName && name !== ownersName) return;
       planChanged ||= !name || name === planName;
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -296,6 +302,68 @@ function savePlan(body, { planPath, raw, data: before, revision, config, now }) 
   return result;
 }
 
+function serveOwners(res, project, input) {
+  try {
+    const saving = input !== undefined;
+    const config = saving
+      ? withPlanLock(project.planPath, () => {
+        const next = normalizeOwnersConfig(input);
+        writeOwnersConfig(project, next);
+        return next;
+      })
+      : readOwnersConfig(project);
+    const snapshot = readPlanSnapshot(project);
+    return json(res, 200, {
+      ...(saving ? { ok: true } : {}),
+      projectId: project.id,
+      revision: snapshot.revision || null,
+      roster: config.owners,
+      owners: mergeOwnersWithPlan(config.owners, snapshot.data),
+    });
+  } catch (err) {
+    return planErrorResponse(res, err, err instanceof OwnersConfigError ? 400 : 500);
+  }
+}
+
+function serveOwnerRename(res, project, input) {
+  try {
+    const from = normalizeOwnerName(input?.from);
+    const to = normalizeOwnerName(input?.to);
+    if (from === to || from.toLowerCase() === 'unassigned') throw new OwnersConfigError('新旧名称须不同，且不能更名系统保留的 unassigned');
+    return withClaimsSnapshot(project, (snapshot) => {
+      const { data, revision } = snapshot;
+      const affected = data.tasks.filter((task) => task.owner === from);
+      const { owners } = readOwnersConfig(project);
+      const merging = owners.some((entry) => entry.name.toLowerCase() === to.toLowerCase()) || data.tasks.some((task) => task.owner === to);
+      const result = { ok: true, projectId: project.id, from, to, merging, affectedCount: affected.length, revision };
+      if (input.dryRun === true) return json(res, 200, {
+        ...result, dryRun: true,
+        openAffectedCount: affected.filter((task) => task.status !== 'done').length,
+        affectedTaskIds: affected.map((task) => task.id),
+      });
+
+      const roster = applyOwnerRenameToRoster(owners, from, to);
+      const tasks = data.tasks.map((task) => task.owner === from ? { ...task, owner: to } : task);
+      if (affected.length) {
+        const reason = (typeof input.reason === 'string' && input.reason.trim())
+          || `负责人更名：${from} -> ${to}（更新 ${affected.length} 项任务）`;
+        const saved = savePlan({ ...data, tasks, reason, expectedRevision: input.expectedRevision }, snapshot);
+        if (saved.conflict) return json(res, 409, { ...saved, revision });
+        if (!saved.ok) return json(res, 400, saved);
+        result.revision = saved.revision;
+      }
+      try { writeOwnersConfig(project, { owners: roster }); }
+      catch (err) {
+        if (!affected.length) throw err;
+        return json(res, 500, { ...result, ok: false, message: '计划已更新，负责人名单未保存。请重新预览并确认更名以完成。' });
+      }
+      return json(res, 200, { ...result, roster, owners: mergeOwnersWithPlan(roster, { tasks }) });
+    });
+  } catch (err) {
+    return planErrorResponse(res, err);
+  }
+}
+
 createServer((req, res) => {
   const host = req.headers.host || '';
   if (!new RegExp(`^(?:localhost|127\\.0\\.0\\.1):${port}$`, 'i').test(host) || (req.headers.origin && req.headers.origin !== `http://${host}`)) return json(res, 403, { message: '仅允许本机同源访问' });
@@ -376,6 +444,13 @@ createServer((req, res) => {
   if (url.pathname === '/api/capacity') {
     if (req.method === 'GET') return serveCapacity(res, project);
     if (req.method === 'POST') return withJsonBody(req, res, 256 * 1024, (input) => serveCapacity(res, project, input));
+  }
+  if (url.pathname === '/api/owners') {
+    if (req.method === 'GET') return serveOwners(res, project);
+    if (req.method === 'POST') return withJsonBody(req, res, 64 * 1024, (input) => serveOwners(res, project, input));
+  }
+  if (url.pathname === '/api/owners/rename' && req.method === 'POST') {
+    return withJsonBody(req, res, 16 * 1024, (input) => serveOwnerRename(res, project, input));
   }
   if (url.pathname === '/api/integrations') {
     if (req.method === 'GET') return void serveIntegrations(res, project, 'get');

@@ -43,8 +43,23 @@ export function enhanceSearchPicker(select, name) {
   const empty = create('span', 'picker-empty');
   empty.setAttribute('role', 'status');
   empty.hidden = true;
+  const clearBtn = select.multiple ? create('button', 'picker-clear') : null;
+  if (clearBtn) {
+    clearBtn.type = 'button';
+    clearBtn.textContent = '清空已选';
+    clearBtn.hidden = true;
+    clearBtn.addEventListener('mousedown', (event) => event.preventDefault());
+    clearBtn.addEventListener('click', () => {
+      let changed = false;
+      for (const option of select.options) {
+        if (option.selected) { option.selected = false; changed = true; }
+      }
+      if (changed) select.dispatchEvent(new Event('change', { bubbles: true }));
+      sync();
+    });
+  }
   for (const el of [trigger, input]) el.setAttribute('aria-controls', list.id);
-  popup.append(input, list, empty);
+  popup.append(...(clearBtn ? [input, list, empty, clearBtn] : [input, list, empty]));
   root.append(trigger, popup);
   for (const label of select.labels || []) {
     if (label.htmlFor === select.id) label.htmlFor = trigger.id;
@@ -131,12 +146,19 @@ export function enhanceSearchPicker(select, name) {
     prior = next;
     const chosen = entries.filter(entry => entry.selected);
     const single = select.multiple ? null : chosen[0];
-    const text = select.multiple ? (chosen.length ? `已选择 ${chosen.length} 项` : '选择任务')
-      : single?.label ?? (entries.length ? `选择${name}` : '无可选项');
+    const emptyLabel = select.dataset.emptyLabel || (select.multiple ? '选择任务' : `选择${name}`);
+    const text = select.multiple
+      ? (chosen.length === 0
+        ? emptyLabel
+        : chosen.length <= 2
+          ? chosen.map(entry => entry.label).join('、')
+          : `${chosen[0].label} 等 ${chosen.length} 项`)
+      : single?.label ?? (entries.length ? emptyLabel : '无可选项');
     trigger.replaceChildren();
     appendLabel(trigger, text, single?.health);
     trigger.setAttribute('aria-label', `${name}：${text}${healthLabels[single?.health] ? '，' + healthLabels[single.health] : ''}`);
     trigger.disabled = select.disabled || entries.length === 0;
+    if (clearBtn) clearBtn.hidden = chosen.length === 0;
     if (trigger.disabled) close();
     else if (open) renderResults(entries);
   }

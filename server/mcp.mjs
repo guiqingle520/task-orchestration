@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontMatter, validate } from '../scripts/validate-plan.mjs';
 import { updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
-import { createWorkspaces } from './workspaces.mjs';
+import { createWorkspaces, registerWorkspace } from './workspaces.mjs';
+import { initPlanFile, minimalPlanExample } from './init-plan.mjs';
 import { extractAcceptanceByTask } from './plan-acceptance.mjs';
 import { summarizeProject } from './portfolio.mjs';
 import { compute } from '../web/metrics.js';
@@ -156,6 +157,25 @@ export const MCP_TOOL_DEFINITIONS = [
     ['id', 'actor', 'leaseId'], { ...renewalFields, leaseId: { type: 'string' } }),
   claimTool('plan_release_task', '释放认领。正常释放时提供执行人和租约代次，强制释放时提供原因。',
     ['id'], { ...forceFields, leaseId: { type: 'string' } }),
+  {
+    name: 'plan_spec',
+    description: '读取计划规范、最小示例与模板。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'plan_init',
+    description: '在当前项目创建初始计划。已有计划时返回冲突并保留原文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string' },
+        milestone: { type: 'string' },
+        due: { type: 'string', description: '首个里程碑交付日 YYYY-MM-DD。' },
+        owner: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 const claimActions = new Map([['plan_claim_task', 'claim'], ['plan_heartbeat_task', 'heartbeat'], ['plan_release_task', 'release']]);
@@ -166,9 +186,13 @@ function compactClaim(claim) {
   return { state, actor, leaseId, expiresAt, note };
 }
 
-export function createMcpService(rootDir = DEFAULT_ROOT) {
+export function createMcpService(rootDir = DEFAULT_ROOT, options = {}) {
   const root = resolve(rootDir);
-  const workspaces = createWorkspaces(root);
+  const defaultRepoRoot = resolve(options.defaultRepoRoot || process.env.TASK_COCKPIT_PROJECT_ROOT || root);
+  const workspaces = createWorkspaces(DEFAULT_ROOT, {
+    configRoot: options.configRoot || process.env.TASK_COCKPIT_HOME || root,
+    defaultRepoRoot,
+  });
 
   function resolveProject(projectId) {
     return workspaces.get(projectId || '');
@@ -176,6 +200,32 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
 
   function invokeTool(name, args = {}) {
     const input = args && typeof args === 'object' ? args : {};
+    if (name === 'plan_spec') {
+      try {
+        const spec = readFileSync(join(DEFAULT_ROOT, 'docs', 'PLAN_SPEC.md'), 'utf8');
+        const template = readFileSync(join(DEFAULT_ROOT, 'plan', 'plan.template.md'), 'utf8');
+        return toolOk({ ok: true, spec, template, minimalExample: minimalPlanExample });
+      } catch (err) {
+        return toolErr(500, 'SPEC_READ_ERROR', err.message);
+      }
+    }
+    if (name === 'plan_init') {
+      if (input.due !== undefined && !validDate(input.due)) return toolErr(400, 'INVALID_DATE', 'due 必须是有效的 YYYY-MM-DD 日期');
+      let created;
+      try { created = initPlanFile(defaultRepoRoot, input); }
+      catch (err) {
+        if (err.code === 'EEXIST') return toolErr(409, 'PLAN_ALREADY_EXISTS', '当前目录已存在 plan/plan.md');
+        return toolErr(400, 'INIT_FAILED', err.message);
+      }
+      const { planCreated, planPath, data } = created;
+      if (!planCreated) return toolErr(409, 'PLAN_ALREADY_EXISTS', '当前目录已存在 plan/plan.md', { planPath });
+      try {
+        const { projectId } = registerWorkspace(workspaces, defaultRepoRoot);
+        return toolOk({ ok: true, projectId, planPath, project: data.project, data });
+      } catch (err) {
+        return toolOk({ ok: true, projectId: null, planPath, project: data.project, data, warning: err.message });
+      }
+    }
     if (name === 'plan_list_projects') {
       const today = input.today || localToday();
       if (!validDate(today)) return toolErr(400, 'INVALID_DATE', 'today 必须是有效的 YYYY-MM-DD 日期');
@@ -377,8 +427,8 @@ export function createMcpService(rootDir = DEFAULT_ROOT) {
   return { callTool, handleMessage };
 }
 
-export function startStdioServer(rootDir = DEFAULT_ROOT) {
-  const service = createMcpService(rootDir);
+export function startStdioServer(rootDir = DEFAULT_ROOT, options) {
+  const service = createMcpService(rootDir, options);
   let framing = 'ndjson';
   let buf = Buffer.alloc(0);
 

@@ -4,6 +4,7 @@ import { updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progr
 import { evaluateClaims } from '../web/claims.js';
 import { ClaimError, claimTask, heartbeatTask, reconcileDoneClaims, releaseClaim, replaceRoster, writeClaims } from './claims.mjs';
 import { atomicReplaceFile, revisionOf, withPlanLock } from './plan-lock.mjs';
+import { readOwnersConfig } from './owners.mjs';
 
 export function withClaimsSnapshot(project, fn) {
   return withPlanLock(project.planPath, (planPath) => {
@@ -25,8 +26,11 @@ export function withClaimsSnapshot(project, fn) {
 export function getClaimsSnapshot(project, today) {
   return withClaimsSnapshot(project, ({ data, config, now }) => {
     const { claims, mergedRoster, summary } = evaluateClaims(config, data, now);
+    let planOwners = [];
+    try { planOwners = readOwnersConfig(project).owners; }
+    catch { /* 负责人列表的读取错误由 /api/owners 报告。 */ }
     return { projectId: project.id, today, now: new Date(now).toISOString(),
-      roster: mergedRoster, configuredRoster: config.roster, claims, summary, activityLog: config.activityLog, auditLog: config.auditLog };
+      roster: mergedRoster, configuredRoster: config.roster, planOwners, claims, summary, activityLog: config.activityLog, auditLog: config.auditLog };
   });
 }
 

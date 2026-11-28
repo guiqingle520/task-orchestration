@@ -123,9 +123,9 @@
           <div id="simResult" class="sim-result" aria-live="polite"></div>
           <div class="task-filters" id="taskFilters" role="group" aria-label="筛选时间线和跟进任务" hidden>
             <div class="task-filter-field"><label for="taskQuery">搜索任务</label><input type="search" id="taskQuery" placeholder="输入任务编号或标题" autocomplete="off"></div>
-            <div class="task-filter-field"><label for="filterStatus">状态</label><select id="filterStatus"><option value="">全部状态</option><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></div>
-            <div class="task-filter-field"><label for="filterOwner">负责人</label><select id="filterOwner"><option value="">全部负责人</option></select></div>
-            <div class="task-filter-field"><label for="filterMilestone">里程碑</label><select id="filterMilestone"><option value="">全部里程碑</option></select></div>
+            <div class="task-filter-field"><label for="filterStatus">状态</label><select id="filterStatus" multiple data-empty-label="全部状态"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></div>
+            <div class="task-filter-field"><label for="filterOwner">负责人</label><select id="filterOwner" multiple data-empty-label="全部负责人"></select></div>
+            <div class="task-filter-field"><label for="filterMilestone">里程碑</label><select id="filterMilestone" multiple data-empty-label="全部里程碑"></select></div>
             <div class="task-filter-actions"><span id="filterCount" class="empty" role="status"></span><button type="button" id="clearTaskFilters">清空筛选</button><a href="#follow-up">查看日常跟进 ↓</a></div>
           </div>
           </div>
@@ -162,7 +162,11 @@
         <section class="card today-actions" id="todayActionCard" data-views="overview" aria-labelledby="today-action-title">
           <div class="card-head">
             <h2 id="today-action-title">今日行动</h2>
-            <select id="todayActionOwner" class="scope-select" aria-label="按负责人筛选今日行动"><option value="">全部负责人</option></select>
+            <select id="todayActionOwner" class="scope-select" multiple data-empty-label="全部负责人" aria-label="按负责人筛选今日行动"></select>
+          </div>
+          <div class="action-group">
+            <div class="action-group-head"><h3>进行中</h3><span id="todayDoingCount" class="empty"></span></div>
+            <ul id="todayDoingList" class="action-list"></ul>
           </div>
           <div class="action-group">
             <div class="action-group-head"><h3>需跟进</h3><span id="todayFollowCount" class="empty"></span></div>
@@ -173,7 +177,10 @@
             <ul id="todayReadyList" class="action-list"></ul>
           </div>
         </section>
-        <section class="card" id="loadCard" data-views="capacity"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><div id="load"></div></section>
+        <section class="card" id="loadCard" data-views="capacity">
+          <div class="card-head"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><button type="button" class="btn-sm" id="manageOwnersBtn">维护负责人</button></div>
+          <div id="load"></div>
+        </section>
         <section class="card" id="capacityCard" data-views="capacity">
           <div class="card-head"><h2>工时与预估核算</h2><button type="button" class="btn-sm" id="configCapacityBtn">配置日历 / 工时</button></div>
           <div id="capacityMetrics" aria-live="polite"></div>
@@ -229,7 +236,7 @@
     <div id="plannerFields" class="planner-fields" hidden>
       <label>任务编号 <input id="planTaskId" type="text" readonly></label>
       <label>任务标题 <input id="planTaskTitle" type="text" maxlength="120"></label>
-      <label>负责人 <input id="planTaskOwner" type="text" maxlength="60" list="ownerRosterList" placeholder="可从名录选择或直接输入新负责人"></label>
+      <label>负责人 <input id="planTaskOwner" type="text" maxlength="60" list="planOwnerList" placeholder="可从名录选择或直接输入新负责人"></label>
       <div class="picker-field"><label for="planTaskMilestone">所属里程碑</label> <select id="planTaskMilestone"></select></div>
       <div class="field-row">
         <label>计划开始 <input id="planTaskStart" type="date"></label>
@@ -250,6 +257,32 @@
       <button type="button" id="validatePlan">校验计划</button>
       <button type="button" id="closeTask">取消</button>
       <button type="submit">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="ownersDialog" class="task-dialog owners-dialog" aria-labelledby="ownersTitle">
+  <div class="card-head">
+    <h2 id="ownersTitle">维护负责人</h2>
+    <button type="button" id="addOwnerBtn">+ 新增负责人</button>
+  </div>
+  <ul id="ownersList" class="owners-list" aria-label="当前项目负责人"></ul>
+  <p id="ownersMessage" role="status"></p>
+  <div class="dialog-actions"><button type="button" id="closeOwners">关闭</button></div>
+</dialog>
+
+<dialog id="ownerEditDialog" class="task-dialog" aria-labelledby="ownerEditTitle">
+  <form id="ownerEditForm">
+    <h2 id="ownerEditTitle"></h2>
+    <p id="ownerEditSummary"></p>
+    <label id="ownerNameRow"><span id="ownerNameLabel">负责人名称</span><input id="ownerName" type="text" maxlength="60" autocomplete="off" list="ownerNames"></label>
+    <datalist id="ownerNames"></datalist>
+    <label id="ownerRoleRow">角色备注（选填）<input id="ownerRole" type="text" maxlength="60"></label>
+    <label id="ownerReasonRow">变更原因（选填）<input id="ownerReason" type="text"></label>
+    <p id="ownerEditMessage" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeOwnerEdit">取消</button>
+      <button type="submit" id="saveOwnerEdit">保存</button>
     </div>
   </form>
 </dialog>
@@ -384,6 +417,7 @@
 </dialog>
 
 <datalist id="ownerRosterList"></datalist>
+<datalist id="planOwnerList"></datalist>
 
 <dialog id="handoffDialog" class="task-dialog m5-wide" aria-labelledby="handoffTitle">
   <h2 id="handoffTitle">任务开工说明</h2>

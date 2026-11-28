@@ -4,5 +4,7 @@ capacity.json
 *.capacity.json
 claims.json
 *.claims.json
+owners.json
+*.owners.json
 *.lock/
 plan/integrations.json

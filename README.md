@@ -6,6 +6,15 @@
 
 本机需要 Node.js 和 npm。项目使用 Node.js 内置模块和原生浏览器 ES 模块，无需先运行 `npm install`。Git 同步和历史回放需要 Git。
 
+要在自己的项目中使用 npm 包，在目标仓库根目录运行以下命令。已有 `plan/plan.md` 时可直接启动。
+
+```sh
+npx task-cockpit init
+npx task-cockpit
+```
+
+要运行仓库源码，可以检出 `dev` 分支。
+
 ```sh
 git clone --branch dev https://github.com/guiqingle520/task-orchestration.git
 cd task-orchestration
@@ -41,7 +50,13 @@ npm start
 
 ### 接入 MCP
 
-Codex CLI 可注册仓库中的 stdio MCP 服务。将示例路径换成实际的仓库绝对路径。
+使用 npm 包时，Codex CLI 可注册 `npx` 入口。需要指定计划所在仓库时，用 `--root` 传入仓库绝对路径。
+
+```sh
+codex mcp add task-orchestration -- npx -y task-cockpit mcp --root "/绝对路径/你的仓库"
+```
+
+使用源码时，Codex CLI 可注册仓库中的 stdio MCP 服务。将示例路径换成实际的仓库绝对路径。
 
 ```sh
 codex mcp add task-orchestration -- node "/绝对路径/task-orchestration/server/mcp.mjs"

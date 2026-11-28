@@ -2,11 +2,20 @@ import { toDay } from './metrics.js';
 
 export const normalizeQuery = (value = '') => value.trim().normalize('NFKC').toLowerCase();
 
+const toFilterSet = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === 'string' && value) return [value];
+  return [];
+};
+
 export function filterTasks(tasks, { query = '', status = '', owner = '', milestone = '' } = {}) {
   const search = normalizeQuery(query);
-  return tasks.filter(task => (!status || task.status === status)
-    && (!owner || task.owner === owner)
-    && (!milestone || task.milestone === milestone)
+  const statuses = toFilterSet(status);
+  const owners = toFilterSet(owner);
+  const milestones = toFilterSet(milestone);
+  return tasks.filter(task => (!statuses.length || statuses.includes(task.status))
+    && (!owners.length || owners.includes(task.owner))
+    && (!milestones.length || milestones.includes(task.milestone))
     && (!search || normalizeQuery(task.id).includes(search) || normalizeQuery(task.title).includes(search)));
 }
 

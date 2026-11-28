@@ -133,9 +133,19 @@ test('T-58: Overview today actions (follow-up + ready), shared owner filter, qui
   await document.getElementById('today').dispatch('change');
   await new Promise((r) => setTimeout(r, 30));
 
-  // 1. 初始渲染：T-1 在需跟进，T-3(现在可开工) 与 T-4(可提前开始) 在可开工，T-2 等待前置不入可开工，且无 +25% 按钮
+  // 1. 初始渲染：T-1 在进行中与需跟进，T-3(现在可开工) 与 T-4(可提前开始) 在可开工，T-2 等待前置不入可开工，且无 +25% 按钮
+  const doingHtml = elements.get('todayDoingList').innerHTML;
   const followHtml = elements.get('todayFollowList').innerHTML;
   const readyHtml = elements.get('todayReadyList').innerHTML;
+  assert.match(doingHtml, /T-1 · 完成前置算法/);
+  assert.match(doingHtml, /status-chip doing/);
+  assert.match(doingHtml, /status-dot/);
+  assert.match(doingHtml, /action-progress-bar/);
+  assert.match(elements.get('kpis').innerHTML, /kpi-doing-pill/);
+  assert.match(elements.get('kpis').innerHTML, /进行中 1/);
+  assert.match(elements.get('gantt').innerHTML, /st-row-doing/);
+  assert.match(elements.get('gantt').innerHTML, /st-act-doing/);
+  assert.match(elements.get('gantt').innerHTML, /st-bar-todo/);
   assert.match(followHtml, /T-1 · 完成前置算法/);
   assert.match(followHtml, /已逾期 2 天/);
   assert.match(followHtml, /data-quick-edit="T-1"/);
@@ -148,9 +158,10 @@ test('T-58: Overview today actions (follow-up + ready), shared owner filter, qui
   assert.match(readyHtml, /可提前开始/);
   assert.doesNotMatch(readyHtml, /T-2 · 联调总览界面/);
 
-  // 2. 共用负责人筛选同时作用于「需跟进」与「可开工」
+  // 2. 共用负责人筛选同时作用于「进行中」「需跟进」与「可开工」
   elements.get('todayActionOwner').value = 'antigravity';
   await elements.get('todayActionOwner').dispatch('change');
+  assert.doesNotMatch(elements.get('todayDoingList').innerHTML, /T-1/);
   assert.doesNotMatch(elements.get('todayFollowList').innerHTML, /T-1/);
   assert.doesNotMatch(elements.get('todayReadyList').innerHTML, /T-3/);
   assert.match(elements.get('todayReadyList').innerHTML, /T-4 · 计划未来开始任务/);

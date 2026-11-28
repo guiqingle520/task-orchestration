@@ -33,3 +33,9 @@
 ## YAML 子集限制(校验器仅支持)
 - 只支持 `key: value`、`- key: value` 列表项、`[a, b]` 行内列表、`#` 注释。
 - 不支持多行字符串、嵌套对象、锚点。字符串含特殊字符时用引号。
+
+## 使用 npm 命令
+
+`npx task-cockpit init` 创建初始计划，已有计划时保留原文件。用 `npx task-cockpit spec --minimal` 查看最小示例。任务可简写为 `id`、`title`、`start` 和 `end`，其余执行字段由读取器补默认值。规划多个里程碑时，每项任务还需填写 `milestone`。
+
+`npx task-cockpit check` 只校验。确认要规范化写回时使用 `npx task-cockpit check --fix`。修复会重排 YAML 并移除其中的注释，计划正文会保留。若修复会改动正处于活跃认领的任务，先协调释放。

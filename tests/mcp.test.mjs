@@ -107,7 +107,7 @@ test('T-60: stdio MCP server supports query, validate, role guard, and dual-agen
   const list = await client.request('tools/list');
   const names = list.result.tools.map((tool) => tool.name);
   assert.deepEqual(names, ['plan_list_projects', 'plan_get_overview', 'plan_get_task', 'plan_validate', 'plan_update_task',
-    'plan_claim_task', 'plan_heartbeat_task', 'plan_release_task']);
+    'plan_claim_task', 'plan_heartbeat_task', 'plan_release_task', 'plan_spec', 'plan_init']);
 
   // 2. 查询与校验
   const projects = (await client.request('tools/call', { name: 'plan_list_projects', arguments: { today: '2026-11-19' } })).result;

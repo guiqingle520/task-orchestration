@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/validate-plan.mjs';
 
@@ -17,14 +17,18 @@ function validPlan(file) {
   return data;
 }
 
-export function createWorkspaces(root) {
-  const configPath = join(root, 'plan', 'workspaces.json');
-  const defaultPlan = join(root, 'plan', 'plan.md');
+export function createWorkspaces(root, {
+  configRoot = process.env.TASK_COCKPIT_HOME || root,
+  defaultRepoRoot = process.env.TASK_COCKPIT_PROJECT_ROOT || root,
+} = {}) {
+  const defaultRoot = existsSync(defaultRepoRoot) ? realpathSync(defaultRepoRoot) : resolve(defaultRepoRoot);
+  const configPath = join(configRoot, 'plan', 'workspaces.json');
+  const defaultPlan = join(defaultRoot, 'plan', 'plan.md');
   const defaultName = () => {
     // 默认计划缺失或无法解析时不能让服务启动失败,该项目之后会被标记为不可用
     try { return parseFrontMatter(readFileSync(defaultPlan, 'utf8'))?.project || '默认项目'; } catch { return '默认项目'; }
   };
-  const fallback = () => ({ default: 'default', projects: [{ id: 'default', name: defaultName(), repoRoot: root, planPath: defaultPlan }] });
+  const fallback = () => ({ default: 'default', projects: [{ id: 'default', name: defaultName(), repoRoot: defaultRoot, planPath: defaultPlan }] });
   function read() {
     if (!existsSync(configPath)) return fallback();
     const data = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -107,4 +111,18 @@ export function createWorkspaces(root) {
     return project;
   }
   return { read, get, add, preflight };
+}
+
+export function registerWorkspace(workspaces, repoRoot) {
+  const check = workspaces.preflight({ repoRoot });
+  if (check.state !== 'valid') return { projectId: null, registered: false };
+  const planPath = realpathSync(join(check.repoRoot, 'plan', 'plan.md'));
+  const { projects } = workspaces.read();
+  const existing = projects.find((project) => project.planPath === planPath);
+  if (existing) return { projectId: existing.id, registered: false };
+  const id = projects.some((project) => project.id === check.id)
+    ? `${check.id.slice(0, 67)}-${randomUUID().slice(0, 12)}`
+    : check.id;
+  const added = workspaces.add({ repoRoot: check.repoRoot, id, name: check.name });
+  return { projectId: added.id, registered: true };
 }

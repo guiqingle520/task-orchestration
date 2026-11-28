@@ -9,6 +9,7 @@ import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 import { installTimelineView } from './timeline-view.js';
 import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
 import { buildTaskHandoff, readyTasks } from './task-handoff.js';
+import { installOwnerPanel, ownerLabel, UNASSIGNED } from './owner-panel.js';
 import { defaultClaimTtl, inferActorKind } from './claims.js';
 
 const $ = (id) => document.getElementById(id);
@@ -46,7 +47,32 @@ let webhookChannelsDraft = [];
 let webhookProjects = [];
 const taskFilterFields = { query: 'taskQuery', status: 'filterStatus', owner: 'filterOwner', milestone: 'filterMilestone' };
 let taskFilters = {};
-let todayActionOwner = '';
+let todayActionOwners = [];
+
+function normalizeSelection(value) {
+  if (Array.isArray(value)) return [...new Set(value.filter(Boolean))];
+  if (typeof value === 'string' && value) return [value];
+  return [];
+}
+
+function readSelectValues(el) {
+  if (!el) return [];
+  if (el.multiple && el.options) {
+    return [...el.options].filter((opt) => opt.selected && opt.value).map((opt) => opt.value);
+  }
+  return normalizeSelection(el.value);
+}
+
+function writeSelectValues(el, values) {
+  if (!el) return;
+  const list = normalizeSelection(values);
+  if (el.multiple && el.options) {
+    const set = new Set(list);
+    for (const opt of el.options) opt.selected = set.has(opt.value);
+  } else {
+    el.value = list[0] ?? '';
+  }
+}
 
 // M9: 多负责人名录与认领租约状态 (T-70 & T-71)
 let claimsSnapshot = null;
@@ -182,7 +208,7 @@ function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
     ? {
         id: nextTaskId(base.data.tasks),
         title: '',
-        owner: 'dev',
+        owner: UNASSIGNED,
         milestone: base.data.milestones.at(-1)?.id || 'M1',
         start: base.m.today,
         end: base.m.today,
@@ -198,7 +224,7 @@ function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
   if ($('taskIssue')) $('taskIssue').innerHTML = isNew ? '' : m5Panels.issueMarkup(editingTask.id);
   $('taskMeta').textContent = isNew
     ? '规划模式：填写新任务排期与变更原因后保存'
-    : `负责人 ${editingTask.owner} · 计划 ${editingTask.start} ~ ${editingTask.end} · 依赖 ${editingTask.deps.join('、') || '无'}`;
+    : `负责人 ${ownerLabel(editingTask.owner)} · 计划 ${editingTask.start} ~ ${editingTask.end} · 依赖 ${editingTask.deps.join('、') || '无'}`;
   $('plannerFields').hidden = !plannerMode && !isNew;
   $('splitTaskBtn').hidden = !(plannerMode && !isNew);
   $('planTaskMilestone').innerHTML = base.data.milestones.map((ms) => `<option value="${esc(ms.id)}">${esc(ms.id)} · ${esc(ms.name)}</option>`).join('');
@@ -488,6 +514,10 @@ $('taskForm').addEventListener('submit', async (event) => {
   if (plannerMode || isCreatingTask) {
     const title = $('planTaskTitle').value.trim();
     const owner = $('planTaskOwner').value.trim();
+    if ((isCreatingTask || owner !== editingTask.owner) && isInactivePlanOwner(owner)) {
+      $('taskMessage').textContent = '该负责人已停用，请选择可分配的负责人。';
+      return;
+    }
     const milestone = $('planTaskMilestone').value;
     const start = $('planTaskStart').value;
     const end = $('planTaskEnd').value;
@@ -569,6 +599,10 @@ $('splitTaskBtn').addEventListener('click', async () => {
     end: fromDay(mid),
     deps: $('planTaskDeps').value.split(/[,\s，、]+/).map((x) => x.trim()).filter(Boolean),
   };
+  if (isInactivePlanOwner(firstTask.owner)) {
+    $('taskMessage').textContent = '拆分会创建新任务，请选择可分配的负责人。';
+    return;
+  }
   const secondTask = {
     id: newId,
     title: `${baseTitle}(下)`,
@@ -656,7 +690,7 @@ function setPlanAvailable(available) {
   const isWritable = available && !isTimeMachine;
   for (const id of ['plannerMode', 'timelineFocusPlanner', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
     'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn',
-    'manageRosterBtn', 'refreshClaimsBtn']) {
+    'manageOwnersBtn', 'manageRosterBtn', 'refreshClaimsBtn']) {
     if ($(id)) $(id).disabled = !isWritable;
   }
   if ($('burndownScope')) $('burndownScope').disabled = !available;
@@ -664,6 +698,7 @@ function setPlanAvailable(available) {
 }
 
 function clearPlan() {
+  ownerPanel.close();
   if (isTimeMachine) exitTimeMachine(false);
   historyRequest++;
   historyCommits = [];
@@ -677,7 +712,7 @@ function clearPlan() {
   planConfirmation = null;
   selected = null;
   editingTask = taskEditBase = milestoneEditBase = null;
-  todayActionOwner = '';
+  todayActionOwners = [];
   if ($('claimsLiveEvents')) {
     $('claimsLiveEvents').hidden = true;
     $('claimsLiveEvents').open = false;
@@ -685,7 +720,7 @@ function clearPlan() {
   for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog', 'rosterDialog', 'claimActionDialog']) if ($(id)?.open) $(id).close();
   for (const id of ['kpis', 'gctrl', 'timelineActions', 'timelineOptions', 'timelineRange', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
     'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks', 'todayFollowList', 'todayReadyList',
-    'claimsLiveBody', 'claimsLiveEventList', 'ownerRosterList']) {
+    'claimsLiveBody', 'claimsLiveEventList', 'ownerRosterList', 'planOwnerList']) {
     if ($(id)) {
       $(id).innerHTML = '';
       renderedMarkup.delete($(id));
@@ -734,6 +769,7 @@ async function enterTimeMachine() {
       return;
     }
     isTimeMachine = true;
+    ownerPanel.close();
     resetPlanGesture();
     for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'webhookDialog']) if ($(id)?.open) $(id).close();
     editingTask = taskEditBase = milestoneEditBase = planConfirmation = null;
@@ -1319,15 +1355,17 @@ function renderAll(scroll) {
   renderMilestones(m);
   renderLoad(m);
   renderClaimsLiveCard(data, m);
-  for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterOwner', 'filterMilestone', 'todayActionOwner']) syncSearchPicker($(id));
+  for (const id of ['snapshots', 'simTask', 'burndownScope', 'filterStatus', 'filterOwner', 'filterMilestone', 'todayActionOwner']) syncSearchPicker($(id));
   if (scroll && selected) document.querySelector('.lrow.sel, .lgroup.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
 function setTaskFilters(filters = {}) {
   taskFilters = filters;
   for (const [key, id] of Object.entries(taskFilterFields)) {
-    $(id).value = filters[key] ?? '';
-    syncSearchPicker($(id));
+    const el = $(id);
+    if (key === 'query') el.value = filters[key] ?? '';
+    else writeSelectValues(el, filters[key]);
+    syncSearchPicker(el);
   }
 }
 
@@ -1343,6 +1381,10 @@ function getMergedOwners(data) {
     if (entry?.id) map.set(entry.id, entry);
   }
   return [...map.values()].sort((a, b) => a.id.localeCompare(b.id, 'zh-CN'));
+}
+
+function isInactivePlanOwner(name) {
+  return claimsSnapshot?.planOwners?.some((owner) => owner.active === false && owner.name.toLowerCase() === name.toLowerCase());
 }
 
 function getTaskClaim(taskId) {
@@ -1393,23 +1435,33 @@ function updateOwnerDatalist(data) {
     return `<option value="${esc(o.id)}" label="${esc(text)}"></option>`;
   }).join('');
   if (listEl.innerHTML !== markup) listEl.innerHTML = markup;
+  const planList = $('planOwnerList');
+  if (planList) {
+    const names = new Set([UNASSIGNED, ...owners.map(({ id }) => id), ...(claimsSnapshot?.planOwners ?? []).map(({ name }) => name)]);
+    const planMarkup = [...names].filter((name) => !isInactivePlanOwner(name))
+      .map((name) => `<option value="${esc(name)}" label="${esc(ownerLabel(name))}"></option>`).join('');
+    if (planList.innerHTML !== planMarkup) planList.innerHTML = planMarkup;
+  }
 }
 
 function updateTaskFilters(data) {
   $('taskFilters').hidden = $('follow-up').hidden = false;
   updateOwnerDatalist(data);
-  const optionList = (key, entries, all) => {
+  const optionList = (key, entries) => {
     const el = $(taskFilterFields[key]);
-    const chosen = taskFilters[key] ?? '';
-    const options = [['', all], ...entries];
-    if (chosen && !entries.some(([id]) => id === chosen)) options.push([chosen, `${chosen}（当前版本无此选项）`]);
+    const chosen = normalizeSelection(taskFilters[key]);
+    const options = [...entries];
+    for (const val of chosen) {
+      if (!entries.some(([id]) => id === val)) options.push([val, `${val}（当前版本无此选项）`]);
+    }
     const markup = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
     if (el.innerHTML !== markup) el.innerHTML = markup;
-    el.value = chosen;
+    writeSelectValues(el, chosen);
   };
   const owners = getMergedOwners(data);
-  optionList('owner', owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id]), '全部负责人');
-  optionList('milestone', data.milestones.map(({ id, name }) => [id, `${id} · ${name}`]), '全部里程碑');
+  optionList('owner', owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id]));
+  optionList('milestone', data.milestones.map(({ id, name }) => [id, `${id} · ${name}`]));
+  writeSelectValues($('filterStatus'), taskFilters.status);
 }
 
 function applyTaskFilters() {
@@ -1427,7 +1479,7 @@ function applyTaskFilters() {
 for (const [key, id] of Object.entries(taskFilterFields)) {
   $(id).addEventListener(key === 'query' ? 'input' : 'change', (event) => {
     if (event.isComposing) return;
-    taskFilters[key] = $(id).value;
+    taskFilters[key] = key === 'query' ? $(id).value : readSelectValues($(id));
     applyTaskFilters();
   });
 }
@@ -1619,13 +1671,17 @@ function renderTodayActions(data, m) {
   const ownerSelect = $('todayActionOwner');
   if (ownerSelect) {
     const owners = getMergedOwners(data);
-    if (todayActionOwner && !owners.some((o) => o.id === todayActionOwner)) todayActionOwner = '';
-    const markup = [['', '全部负责人'], ...owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id])]
+    const validIds = new Set(owners.map((o) => o.id));
+    todayActionOwners = todayActionOwners.filter((id) => validIds.has(id));
+    const markup = owners.map(({ id, label }) => [id, label && label !== id ? `${id} · ${label}` : id])
       .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
     if (ownerSelect.innerHTML !== markup) ownerSelect.innerHTML = markup;
-    ownerSelect.value = todayActionOwner;
+    writeSelectValues(ownerSelect, todayActionOwners);
   }
-  const byOwner = ({ task }) => !todayActionOwner || task.owner === todayActionOwner;
+  const byOwner = ({ task }) => !todayActionOwners.length || todayActionOwners.includes(task.owner);
+  const doingItems = data.tasks
+    .filter((task) => task.status === 'doing' && (!todayActionOwners.length || todayActionOwners.includes(task.owner)))
+    .sort((a, b) => a.end.localeCompare(b.end) || a.id.localeCompare(b.id, 'en', { numeric: true }));
   const followItems = followUpTasks(data.tasks, m.today).filter(byOwner);
   const readyItems = readyTasks(data.tasks, m.today).filter(byOwner);
   const actionButtons = (task) => {
@@ -1639,6 +1695,26 @@ function renderTodayActions(data, m) {
           : `<button type="button" data-claim-op="heartbeat" data-claim-task="${esc(task.id)}">续租/备注</button>`;
     return `<div class="action-item-buttons">${edit}${claimBtn}<button type="button" data-handoff-task="${esc(task.id)}">复制开工说明</button></div>`;
   };
+  if ($('todayDoingCount')) $('todayDoingCount').textContent = `${doingItems.length} 项`;
+  if ($('todayDoingList')) {
+    renderMarkup($('todayDoingList'), doingItems.map((task) => {
+      const days = toDay(task.end) - toDay(m.today);
+      const deadline = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `距截止 ${days} 天`;
+      const claim = getTaskClaim(task.id);
+      const ownerLine = formatOwnerAndActor(task, claim);
+      return `<li class="action-item action-item-doing">
+        <div class="action-item-main">
+          <span class="status-chip doing"><i class="status-dot" aria-hidden="true"></i>进行中</span>
+          <div class="action-item-info">
+            <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
+            <span class="action-item-reason">${esc(ownerLine)} · ${esc(deadline)} · 进度 ${task.progress}% ${renderClaimChip(task)}</span>
+            <span class="action-progress-bar" aria-hidden="true"><i style="width:${task.progress}%"></i></span>
+          </div>
+        </div>
+        ${actionButtons(task)}
+      </li>`;
+    }).join('') || '<li class="empty">当前没有正在开发的任务。</li>');
+  }
   if ($('todayFollowCount')) $('todayFollowCount').textContent = `${followItems.length} 项`;
   if ($('todayFollowList')) {
     renderMarkup($('todayFollowList'), followItems.map(({ task, priority, days }) => {
@@ -1703,11 +1779,16 @@ function renderKpis(data, m) {
   const diff = Math.round(s.overall - s.expectedAll);
   const dcls = diff < -20 ? 'red' : diff < -5 ? 'yellow' : '';
   const done = data.tasks.filter((t) => t.status === 'done').length;
+  const doing = data.tasks.filter((t) => t.status === 'doing').length;
+  const todo = data.tasks.filter((t) => t.status === 'todo').length;
+  const doingBadge = doing
+    ? `<span class="kpi-doing-pill"><i class="status-dot" aria-hidden="true"></i>进行中 ${doing}</span>`
+    : '进行中 0';
   $('kpis').innerHTML = `
     <div class="kpi main"><div class="l">总体进度</div>
       <div class="kpi-progress"><div class="v">${Math.round(s.overall)}%</div><span class="dev ${dcls}">较计划 ${diff > 0 ? '+' : ''}${diff} 个百分点</span></div>
       <div class="track" role="img" aria-label="总体进度 ${Math.round(s.overall)}%，计划应达 ${Math.round(s.expectedAll)}%"><i style="width:${s.overall}%"></i><b style="--expected:${s.expectedAll}%" title="计划应达 ${Math.round(s.expectedAll)}%"></b></div></div>
-    <div class="kpi"><div class="l">已完成任务</div><div class="v">${done} / ${data.tasks.length}</div><div class="l">共 ${data.tasks.length} 项任务</div></div>
+    <div class="kpi"><div class="l">已完成任务</div><div class="v">${done} / ${data.tasks.length}</div><div class="l kpi-status-mix">${doingBadge} · 未开始 ${todo}</div></div>
     <div class="kpi"><div class="l">逾期 / 阻塞</div><div class="v"><span class="${s.overdueCount ? 'yellow' : ''}">${s.overdueCount}</span> / <span class="${s.blockedCount ? 'red' : ''}">${s.blockedCount}</span></div><div class="l">${s.overdueCount || s.blockedCount ? '有任务需要跟进' : '暂无逾期或阻塞'}</div></div>
     <div class="kpi"><div class="l">距下个里程碑</div><div class="v">${!nm ? '—' : nm.daysLeft < 0 ? `<span class="red">逾期 ${-nm.daysLeft} 天</span>` : `${nm.daysLeft} 天`}</div><div class="l">${nm ? esc(nm.id + ' · ' + nm.name) : '无待交付里程碑'}</div></div>`;
 }
@@ -1814,7 +1895,12 @@ function renderCtrl() {
 
 function renderGantt(data, m) {
   renderCtrl();
-  const filtering = Boolean(normalizeQuery(taskFilters.query) || taskFilters.status || taskFilters.owner || taskFilters.milestone);
+  const filtering = Boolean(
+    normalizeQuery(taskFilters.query)
+    || normalizeSelection(taskFilters.status).length
+    || normalizeSelection(taskFilters.owner).length
+    || normalizeSelection(taskFilters.milestone).length
+  );
   const visibleTasks = filterTasks(data.tasks, taskFilters);
   $('filterCount').textContent = `${visibleTasks.length} / ${data.tasks.length} 项任务`;
   if (filtering && !visibleTasks.length) {
@@ -1902,9 +1988,16 @@ function renderGantt(data, m) {
       : !isTimeMachine && claim?.state === 'stale'
         ? `<span class="gantt-claim-badge stale" aria-label="${esc(claim.actor)} 租约已超时 ${claim.overdueMinutes ?? 0} 分钟，可接管" title="${esc(claim.actor)} 租约已超时 ${claim.overdueMinutes ?? 0}m · 可接管">⚠️ 超时</span>`
         : '';
-    return `<div class="lrow ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" title="${esc(t.title)}">
+    const statusCls = t.status === 'blocked' ? 'st-blocked red'
+      : t.status === 'done' ? 'st-done'
+        : t.status === 'doing' ? (i.overdue ? 'st-doing yellow' : 'st-doing')
+          : (i.overdue ? 'st-todo yellow' : 'st-todo');
+    const statusLabel = t.status !== 'blocked' && i.overdue
+      ? (t.status === 'doing' ? '进行中·逾期' : '逾期')
+      : STATUS[t.status];
+    return `<div class="lrow st-row-${esc(t.status)} ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" title="${esc(t.title)}">
       <div class="t"><span class="title">${esc(t.title)}</span></div>
-      <div class="s"><span class="id ${i.critical ? 'crit' : ''}" title="${i.critical ? '关键路径' : ''}">${i.critical ? '★ ' : ''}${esc(t.id)}</span><span class="task-owner" title="计划负责人 ${esc(t.owner)}">${esc(t.owner)}</span>${claimBadge}<span class="task-status ${t.status === 'blocked' ? 'red' : i.overdue ? 'yellow' : ''}">${t.status !== 'blocked' && i.overdue ? '逾期' : STATUS[t.status]} · ${t.progress}%</span></div></div>`;
+      <div class="s"><span class="id ${i.critical ? 'crit' : ''}" title="${i.critical ? '关键路径' : ''}">${i.critical ? '★ ' : ''}${esc(t.id)}</span><span class="task-owner" title="计划负责人 ${esc(t.owner)}">${esc(t.owner)}</span>${claimBadge}<span class="task-status ${statusCls}">${t.status === 'doing' ? '<i class="status-dot" aria-hidden="true"></i>' : ''}${statusLabel} · ${t.progress}%</span></div></div>`;
   }).join('');
 
   // 时间线:条带与柱
@@ -1944,10 +2037,10 @@ function renderGantt(data, m) {
         bars += `<div class="bar ghost" style="left:${pct(bs)}%;width:${((be - bs + 1) / n) * 100}%;top:${r.y + 10}px" title="基线排期: ${btask.baselineStart} ~ ${btask.baselineEnd}${shift ? ` (排期偏移 ${shift > 0 ? '+' : ''}${shift} 天)` : ''}">${shiftBadge}</div>`;
       }
     }
-    bars += `<div class="bar plan ${dragCls} ${sel}" ${dragAttr} data-gantt-task="${esc(t.id)}" style="left:${pct(i.s)}%;width:${(i.dur / n) * 100}%;top:${r.y + 10}px" title="${plannerMode ? '拖拽平移计划排期：' : '计划 '}${t.start} ~ ${t.end}">${handles}</div>`;
+    bars += `<div class="bar plan st-bar-${esc(t.status)} ${dragCls} ${sel}" ${dragAttr} data-gantt-task="${esc(t.id)}" style="left:${pct(i.s)}%;width:${(i.dur / n) * 100}%;top:${r.y + 10}px" title="${plannerMode ? '拖拽平移计划排期：' : '计划 '}${t.start} ~ ${t.end}">${handles}</div>`;
     if (t.actualStart) {
       const as = toDay(t.actualStart), ae = t.actualEnd ? toDay(t.actualEnd) : Math.max(as, toDay(m.today));
-      bars += `<div class="bar act ${i.health}" style="left:${pct(as)}%;width:${((ae - as + 1) / n) * 100}%;top:${r.y + 26}px" title="实际 ${t.actualStart} ~ ${t.actualEnd || '进行中'},进度 ${t.progress}%"><i style="width:${t.progress}%"></i></div>`;
+      bars += `<div class="bar act st-act-${esc(t.status)} ${i.health}" style="left:${pct(as)}%;width:${((ae - as + 1) / n) * 100}%;top:${r.y + 26}px" title="实际 ${t.actualStart} ~ ${t.actualEnd || '进行中'},进度 ${t.progress}%"><i style="width:${t.progress}%"></i></div>`;
     }
     if (i.slip > 0 && t.status !== 'done')
       bars += `<div class="bar slip" style="left:${pct(i.e + 1)}%;width:${(i.slip / n) * 100}%;top:${r.y + 10}px" title="预计延期 ${i.slip} 天"></div>`;
@@ -2420,7 +2513,7 @@ globalThis.addEventListener?.('resize', () => {
 });
 updateWorkspaceNav();
 $('todayActionOwner')?.addEventListener('change', () => {
-  todayActionOwner = $('todayActionOwner').value;
+  todayActionOwners = readSelectValues($('todayActionOwner'));
   if (last) renderTodayActions(last.data, last.m);
 });
 $('closeHandoff')?.addEventListener('click', () => $('handoffDialog')?.close?.());
@@ -2664,8 +2757,18 @@ $('claimActionForm')?.addEventListener('submit', async (event) => {
 });
 for (const [id, label] of Object.entries({
   projectSelect: '工作区项目', simTask: '模拟任务', burndownScope: '燃尽图里程碑', snapshots: '历史快照',
-  planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterOwner: '负责人', filterMilestone: '里程碑', todayActionOwner: '今日行动负责人',
+  planTaskMilestone: '所属里程碑', integrationTasks: 'Issue 同步任务范围', filterStatus: '状态', filterOwner: '负责人', filterMilestone: '里程碑', todayActionOwner: '今日行动负责人',
 })) enhanceSearchPicker($(id), label);
+const ownerPanel = installOwnerPanel($, {
+  apiUrl,
+  getProject: () => isTimeMachine || portfolioActive ? null : last,
+  onRename: async (from, to) => {
+    const owners = normalizeSelection(taskFilters.owner);
+    if (owners.includes(from)) setTaskFilters({ ...taskFilters, owner: owners.map((o) => (o === from ? to : o)) });
+    if (todayActionOwners.includes(from)) todayActionOwners = [...new Set(todayActionOwners.map((o) => (o === from ? to : o)))];
+    await refresh();
+  },
+});
 setPlanAvailable(false);
 refresh();
 refreshProjects();

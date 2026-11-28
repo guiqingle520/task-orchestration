@@ -176,11 +176,13 @@ export function updatePlanMarkdown(planText, tasks) {
  */
 export function verifyTaskUpdates(output, tasks) {
   let parsed;
-  try { parsed = parseFrontMatter(output); } catch { return false; }
+  try { parsed = parseFrontMatter(output, { normalize: false }); } catch { return false; }
   if (!parsed || !Array.isArray(parsed.tasks)) return false;
   return tasks.every((t) => {
     const got = parsed.tasks.find((item) => item.id === t.id);
-    return got && ['status', 'progress', 'actualStart', 'actualEnd'].every((key) => (got[key] ?? null) === (t[key] ?? null));
+    return got && (got.status ?? 'todo') === (t.status ?? 'todo')
+      && (got.progress ?? 0) === (t.progress ?? 0)
+      && ['actualStart', 'actualEnd'].every((key) => (got[key] ?? null) === (t[key] ?? null));
   });
 }
 

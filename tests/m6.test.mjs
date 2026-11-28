@@ -15,6 +15,8 @@ test('queries combine exact structured filters with case-insensitive ID or title
     task('T-31', '2026-11-18', { title: 'HTML 工时', owner: 'dev', milestone: 'M2' }),
   ];
   assert.deepEqual(filterTasks(tasks, { query: '  html ', status: 'blocked', owner: 'dev', milestone: 'M1' }).map(t => t.id), ['T-30']);
+  assert.deepEqual(filterTasks(tasks, { status: ['todo', 'blocked'], owner: ['codex', 'dev'], milestone: ['M1'] }).map(t => t.id), ['T-3', 'T-30']);
+  assert.deepEqual(filterTasks(tasks, { status: ['doing', 'blocked'] }).map(t => t.id), ['T-3', 'T-30']);
   assert.deepEqual(filterTasks(tasks, { query: '离线', milestone: 'M2' }), []);
   assert.deepEqual(filterTasks(tasks, { query: 'ｔ－３' }).map(t => t.id), ['T-3', 'T-30', 'T-31']);
   assert.deepEqual(filterTasks(tasks), tasks);

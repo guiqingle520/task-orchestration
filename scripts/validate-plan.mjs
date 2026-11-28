@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-// 零依赖的 plan.md 校验器。用法: node scripts/validate-plan.mjs [plan文件路径]
+// 零依赖的 plan.md 校验器。用法: node scripts/validate-plan.mjs [plan文件路径] [--fix]
 // 仅支持 docs/PLAN_SPEC.md 规定的 YAML 子集。
 import { readFileSync, existsSync } from 'node:fs';
+import { atomicReplaceFile, revisionOf, withPlanLock } from '../server/plan-lock.mjs';
+import { readClaims } from '../server/claims.mjs';
+import { claimState } from '../web/claims.js';
 
-const file = process.argv[2] || 'plan/plan.md';
+const cliArgs = process.argv.slice(2);
+const fixMode = cliArgs.includes('--fix');
+const file = cliArgs.find((arg) => !arg.startsWith('-')) || 'plan/plan.md';
 const errors = [];
 const err = (m) => errors.push(m);
 
@@ -21,7 +26,54 @@ export function parseScalar(v) {
 
 const stripComment = (s) => s.replace(/\s+#.*$/, '');
 
-export function parseFrontMatter(text) {
+export function normalizePlan(data, { fix = false } = {}) {
+  if (!data || typeof data !== 'object') return data;
+  const singleMilestone = Array.isArray(data.milestones) && data.milestones.length === 1 && data.milestones[0]?.id
+    ? data.milestones[0].id
+    : null;
+  if (Array.isArray(data.tasks)) {
+    for (const t of data.tasks) {
+      if (!t || typeof t !== 'object') continue;
+      if (fix) {
+        if (typeof t.id === 'number' && Number.isInteger(t.id) && t.id > 0) t.id = `T-${t.id}`;
+        else if (typeof t.id === 'string' && /^\d+$/.test(t.id.trim())) t.id = `T-${t.id.trim()}`;
+      }
+      if (t.owner === undefined || t.owner === null || t.owner === '') t.owner = 'unassigned';
+      if ((t.milestone === undefined || t.milestone === null || t.milestone === '') && singleMilestone) {
+        t.milestone = singleMilestone;
+      }
+      if (t.deps === undefined || t.deps === null || t.deps === '') t.deps = [];
+      if (t.status === undefined || t.status === null || t.status === '') {
+        if (typeof t.progress === 'number' && t.progress === 100) t.status = 'done';
+        else if (typeof t.progress === 'number' && t.progress > 0 && t.progress < 100) t.status = 'doing';
+        else t.status = 'todo';
+      }
+      if (t.progress === undefined || t.progress === null || t.progress === '') {
+        t.progress = t.status === 'done' ? 100 : 0;
+      }
+      if (fix) {
+        if (t.status === 'todo' && typeof t.progress === 'number' && t.progress > 0 && t.progress < 100) {
+          t.status = 'doing';
+        } else if (t.status === 'todo' && t.progress === 100) {
+          t.status = 'done';
+        } else if (t.status === 'done' && t.progress !== 100) {
+          t.progress = 100;
+        }
+      }
+      if (t.actualStart === undefined) t.actualStart = null;
+      if (t.actualEnd === undefined) t.actualEnd = null;
+      if (t.status === 'done' && !t.actualEnd && typeof t.end === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.end)) {
+        t.actualEnd = t.end;
+      }
+      if ((t.status === 'doing' || t.status === 'done') && !t.actualStart && typeof t.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.start)) {
+        t.actualStart = t.start;
+      }
+    }
+  }
+  return data;
+}
+
+export function parseFrontMatter(text, { normalize = true } = {}) {
   const m = text.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return null;
   const data = {};
@@ -43,14 +95,16 @@ export function parseFrontMatter(text) {
       throw new Error(`无法解析的行: "${raw}"`);
     }
   }
-  return data;
+  return normalize ? normalizePlan(data) : data;
 }
 
 // 序列化当前支持的 YAML 子集；无法可靠往返时拒绝写入。
-export function serializePlanMarkdown(data, rawMarkdown, changelogEntry = null) {
+export function serializePlanMarkdown(data, rawMarkdown, changelogEntry = null, { allowStripComments = false } = {}) {
   const match = rawMarkdown.match(/^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---)(?=\r?\n|$)/);
   if (!match) throw new Error('计划缺少 YAML front matter');
-  if (match[2].split(/\r?\n/).some((line) => /^\s*#/.test(line) || /\s+#/.test(line))) throw new Error('front matter 含注释，无法安全重写');
+  if (!allowStripComments && match[2].split(/\r?\n/).some((line) => /^\s*#/.test(line) || /\s+#/.test(line))) {
+    throw new Error('front matter 含注释，无法安全重写');
+  }
   const eol = match[1].includes('\r\n') ? '\r\n' : '\n';
   const scalar = (value) => {
     if (value == null) return 'null';
@@ -87,7 +141,7 @@ export function serializePlanMarkdown(data, rawMarkdown, changelogEntry = null) 
   return serialized + body;
 }
 
-const isDate = (s) => {
+export const isDate = (s) => {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const date = new Date(s);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === s;
@@ -123,24 +177,30 @@ function validateInner(data) {
   ts.forEach((t, i) => {
     const p = `任务 ${t.id ?? `#${i}`}`;
     for (const k of ['id', 'title', 'owner', 'milestone', 'start', 'end', 'deps', 'status', 'progress'])
-      if (t[k] === undefined || t[k] === null || t[k] === '') err(`${p} 缺少字段 ${k}`);
+      if (t[k] === undefined || t[k] === null || t[k] === '') {
+        const hint = k === 'milestone' && msIds.size > 0 ? `（可选值: ${[...msIds].join(', ')}）` : '';
+        err(`${p} 缺少字段 ${k}${hint}`);
+      }
     if (t.id) {
-      if (!/^T-\d+$/.test(t.id)) err(`${p} id 格式必须为 T-数字`);
+      if (!/^T-\d+$/.test(String(t.id))) {
+        const num = String(t.id).match(/\d+/)?.[0] || '1';
+        err(`${p} id 格式必须为 T-数字（建议改为 T-${num}，或运行 check --fix 自动修复）`);
+      }
       if (seen.has(t.id)) err(`${p} id 重复`);
       seen.add(t.id);
     }
-    if (t.milestone && !msIds.has(t.milestone)) err(`${p} milestone "${t.milestone}" 不存在`);
+    if (t.milestone && !msIds.has(t.milestone)) err(`${p} milestone "${t.milestone}" 不存在（可用里程碑: ${[...msIds].join(', ')}）`);
     if (t.start != null && !isDate(t.start)) err(`${p} start 必须是 YYYY-MM-DD`);
     if (t.end != null && !isDate(t.end)) err(`${p} end 必须是 YYYY-MM-DD`);
-    if (isDate(t.start) && isDate(t.end) && t.end < t.start) err(`${p} end 早于 start`);
+    if (isDate(t.start) && isDate(t.end) && t.end < t.start) err(`${p} end 早于 start（建议检查起止日期是否填反）`);
     if (t.status && !STATUS.includes(t.status)) err(`${p} status 必须是 ${STATUS.join('|')}`);
     if (t.progress != null && !(typeof t.progress === 'number' && t.progress >= 0 && t.progress <= 100))
       err(`${p} progress 必须是 0-100 的数字`);
-    if (t.status === 'done' && t.progress !== 100) err(`${p} 已 done 但 progress 不是 100`);
-    if (t.status === 'todo' && t.progress > 0) err(`${p} 为 todo 但 progress > 0`);
+    if (t.status === 'done' && t.progress !== 100) err(`${p} 已 done 但 progress 不是 100（建议设 progress: 100，或运行 check --fix）`);
+    if (t.status === 'todo' && t.progress > 0) err(`${p} 为 todo 但 progress > 0（建议将 status 改为 doing，或运行 check --fix）`);
     for (const k of ['actualStart', 'actualEnd'])
       if (t[k] != null && !isDate(t[k])) err(`${p} ${k} 必须是 YYYY-MM-DD 或 null`);
-    if (t.status === 'done' && !isDate(t.actualEnd)) err(`${p} 已 done 必须填写 actualEnd`);
+    if (t.status === 'done' && !isDate(t.actualEnd)) err(`${p} 已 done 必须填写 actualEnd（建议填写完成日期 YYYY-MM-DD，或运行 check --fix）`);
     if (t.deps !== undefined && !Array.isArray(t.deps)) err(`${p} deps 必须是列表,例如 [T-1, T-2]`);
     else (t.deps || []).forEach((d) => {
       if (d === t.id) err(`${p} 不能依赖自己`);
@@ -161,22 +221,45 @@ function validateInner(data) {
   for (const n of graph.keys()) dfs(n, []);
 }
 
-if (process.argv[1]?.endsWith('validate-plan.mjs')) {
-  if (!existsSync(file)) {
-    console.error(`✗ 找不到 ${file}。请先按 plan/plan.template.md 生成计划。`);
-    process.exit(1);
+export function checkAndFixPlanFile(targetFile = file, { fix = false } = {}) {
+  if (!existsSync(targetFile)) {
+    return { ok: false, errors: [`找不到 ${targetFile}。可运行 npx task-cockpit init 生成初始计划。`], fixed: false };
+  }
+  const failure = (message) => ({ ok: false, errors: [message], fixed: false });
+  function check(path) {
+    const raw = readFileSync(path, 'utf8');
+    const data = parseFrontMatter(raw);
+    if (!data) return failure('文件开头缺少 YAML front matter(--- ... ---)');
+    if (fix) normalizePlan(data, { fix: true });
+    const errs = validate(data);
+    if (errs.length) return { ok: false, errors: errs, fixed: false, data };
+    if (!fix) return { ok: true, errors: [], fixed: false, data };
+
+    const output = serializePlanMarkdown(data, raw, null, { allowStripComments: true });
+    if (output === raw) return { ok: true, errors: [], fixed: false, data };
+    const before = parseFrontMatter(raw);
+    const { claims } = readClaims(path);
+    const now = Date.now();
+    const affected = before.tasks.find((task, index) => claims[task.id] &&
+      claimState(claims[task.id], task, now) === 'active' &&
+      JSON.stringify(task) !== JSON.stringify(data.tasks[index]));
+    if (affected) return failure(`任务 ${affected.id} 正处于活跃认领，请先释放再修复计划。`);
+    if (!atomicReplaceFile(path, output, revisionOf(raw))) return failure('计划已变化，请重新校验后再修复。');
+    return { ok: true, errors: [], fixed: true, data };
   }
   try {
-    const data = parseFrontMatter(readFileSync(file, 'utf8'));
-    if (!data) err('文件开头缺少 YAML front matter(--- ... ---)');
-    else validate(data);
+    return fix ? withPlanLock(targetFile, check) : check(targetFile);
   } catch (e) {
-    err(e.message);
+    return failure(e.message);
   }
-  if (errors.length) {
-    console.error(`✗ ${file} 校验失败 (${errors.length} 个问题):`);
-    errors.forEach((e) => console.error('  - ' + e));
+}
+
+if (process.argv[1]?.endsWith('validate-plan.mjs')) {
+  const res = checkAndFixPlanFile(file, { fix: fixMode });
+  if (!res.ok) {
+    console.error(`✗ ${file} 校验失败 (${res.errors.length} 个问题):`);
+    res.errors.forEach((e) => console.error('  - ' + e));
     process.exit(1);
   }
-  console.log(`✓ ${file} 校验通过`);
+  console.log(`✓ ${file} 校验通过${res.fixed ? '（已规范化写回完整字段）' : ''}`);
 }
