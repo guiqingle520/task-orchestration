@@ -23,6 +23,7 @@
     <nav class="workspace-nav" aria-label="驾驶舱导航">
       <div class="nav-label">工作区</div>
       <a href="#portfolio" data-view="portfolio"><span aria-hidden="true">▦</span>跨项目总览</a>
+      <a href="#team" data-view="team"><span aria-hidden="true">◎</span>团队与负载</a>
       <div class="nav-label">项目视图</div>
       <a href="#overview" data-view="overview" aria-current="location"><span aria-hidden="true">⊞</span>项目总览</a>
       <a href="#timeline" data-view="timeline"><span aria-hidden="true">≡</span>计划时间线</a>
@@ -34,7 +35,7 @@
   </aside>
   <div class="workspace-content">
     <header class="top workspace-top">
-      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><span id="viewCrumbSep" aria-hidden="true">›</span><span id="viewCrumb">项目总览</span><strong id="portfolioCrumb" hidden>跨项目总览</strong></div>
+      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><span id="viewCrumbSep" aria-hidden="true">›</span><span id="viewCrumb">项目总览</span><strong id="portfolioCrumb" hidden>跨项目总览</strong><strong id="teamCrumb" hidden>团队与负载</strong></div>
       <div class="ctrl">
         <label class="date-control"><span>统计日</span><input type="date" id="today"></label>
         <button id="reset" title="恢复为真实今天">重置</button>
@@ -52,6 +53,27 @@
         <p id="portfolioCopyStatus" class="portfolio-notice" role="status"></p>
         <textarea id="portfolioMarkdown" aria-label="跨项目 Markdown 摘要" rows="6" readonly hidden></textarea>
         <div id="portfolioBody"></div>
+      </section>
+      <section id="team" class="portfolio team-view" aria-labelledby="teamTitle" tabindex="-1" hidden>
+        <div class="overview-head">
+          <div><h1 id="teamTitle">团队与负载</h1><p>跨项目个人并行负载防撞车与每日站会按人视图。</p></div>
+          <div class="snapshot-controls">
+            <button id="configTeamBtn" type="button">配置团队与上限</button>
+            <button id="teamRefresh" type="button">刷新</button>
+          </div>
+        </div>
+        <p id="teamStatus" class="portfolio-notice" role="status"></p>
+        <div class="team-filters" id="teamFilters" role="group" aria-label="筛选团队成员">
+          <div class="task-filter-presets" id="teamPresetFilters">
+            <button type="button" class="filter-preset-btn on" data-team-preset="all" aria-pressed="true">全部</button>
+            <button type="button" class="filter-preset-btn" data-team-preset="human" aria-pressed="false">人类负责人</button>
+            <button type="button" class="filter-preset-btn" data-team-preset="agent" aria-pressed="false">AI 智能体</button>
+            <button type="button" class="filter-preset-btn" data-team-preset="risk" aria-pressed="false">撞车与阻塞</button>
+          </div>
+          <select id="teamGroupFilter" aria-label="按小组筛选"><option value="">全部分组</option></select>
+          <input id="teamSearch" type="search" placeholder="搜索成员、小组或任务" autocomplete="off">
+        </div>
+        <div id="teamBody"></div>
       </section>
       <div id="singleProjectView">
       <div id="errors" class="errors" hidden></div>
@@ -286,11 +308,31 @@
 <dialog id="ownersDialog" class="task-dialog owners-dialog" aria-labelledby="ownersTitle">
   <div class="card-head">
     <h2 id="ownersTitle">管理团队与智能体</h2>
-    <button type="button" id="addOwnerBtn">+ 新增成员 / 智能体</button>
+    <div class="snapshot-controls">
+      <button type="button" id="importFromTeamBtn">从全局团队导入</button>
+      <button type="button" id="addOwnerBtn">+ 新增成员 / 智能体</button>
+    </div>
   </div>
   <ul id="ownersList" class="owners-list" aria-label="当前项目团队与智能体"></ul>
   <p id="ownersMessage" role="status"></p>
   <div class="dialog-actions"><button type="button" id="closeOwners">关闭</button></div>
+</dialog>
+
+<dialog id="teamConfigDialog" class="task-dialog m5-wide" aria-labelledby="teamConfigTitle">
+  <form id="teamConfigForm">
+    <h2 id="teamConfigTitle">全局团队与并行上限配置</h2>
+    <p class="empty">保存在工作区 `plan/team.json`，用于跨项目分组、每日并行上限（撞车阈值）与别名归并。</p>
+    <div id="teamConfigList" class="webhook-list team-config-list"></div>
+    <div class="snapshot-controls">
+      <button type="button" id="addTeamMemberBtn">+ 新增成员</button>
+      <button type="button" id="syncTeamFromProjectsBtn">+ 从现有项目导入未配置成员</button>
+    </div>
+    <p id="teamConfigStatus" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="closeTeamConfig">取消</button>
+      <button type="submit" id="saveTeamConfigBtn">保存配置</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="ownerEditDialog" class="task-dialog" aria-labelledby="ownerEditTitle">

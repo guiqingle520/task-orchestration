@@ -1274,7 +1274,84 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .toast-locate { font-size:11px; padding:3px 7px; border-radius:var(--rad); border:1px solid var(--b); background:var(--panel-2); cursor:pointer; }
 .toast-close { border:0; background:transparent; color:var(--m); font-size:15px; line-height:1; cursor:pointer; padding:2px 4px; }
 
+/* M13: 团队与负载视图 */
+.team-filters {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+  margin-bottom:14px;
+}
+.team-filters .task-filter-presets { grid-column:auto; }
+.team-filters select, .team-filters input[type="search"] { min-height:30px; font-size:12px; }
+.team-section { margin-top:18px; }
+.team-table-wrap { overflow-x:auto; border:1px solid var(--b); border-radius:var(--rad); background:var(--panel); }
+.team-load-table { width:100%; border-collapse:collapse; font-size:12px; }
+.team-load-table th, .team-load-table td { padding:8px 10px; border-bottom:1px solid var(--b); text-align:left; white-space:nowrap; }
+.team-load-table th { background:var(--panel-2); color:var(--m); font-weight:600; font-size:11px; }
+.team-member-cell { display:flex; align-items:center; gap:6px; }
+.team-group-tag {
+  display:inline-flex;
+  padding:1px 6px;
+  border-radius:999px;
+  background:var(--panel-2);
+  border:1px solid var(--b);
+  font-size:10px;
+  color:var(--m);
+}
+.team-heat-cell {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:28px;
+  height:22px;
+  padding:0 6px;
+  border-radius:4px;
+  font-weight:700;
+  font-variant-numeric:tabular-nums;
+}
+.team-heat-cell.collision { background:var(--red-bg); color:var(--r); border:1px solid var(--red-line); }
+.team-heat-cell.multi { background:#fef3c7; color:#b45309; border:1px solid #fcd34d; }
+.team-heat-cell.normal { background:#dcfce7; color:#15803d; }
+.team-heat-cell.idle { color:var(--m); }
+.team-state-badge {
+  display:inline-flex;
+  padding:2px 7px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:600;
+}
+.team-state-badge.collision { background:var(--red-bg); color:var(--r); }
+.team-state-badge.multi { background:#fef3c7; color:#b45309; }
+.team-state-badge.normal { background:#dcfce7; color:#15803d; }
+.team-state-badge.idle { background:var(--panel-2); color:var(--m); }
+.team-collision-row td { background:var(--panel-2); white-space:normal; }
+.team-collision-panel { padding:4px 2px; font-size:12px; }
+.team-collision-panel ul { margin:6px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:4px; }
+.team-over-tag { color:var(--r); font-weight:700; }
+.team-standup-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; margin-top:10px; }
+.team-member-card {
+  border:1px solid var(--b);
+  border-left:4px solid var(--b);
+  border-radius:var(--rad);
+  background:var(--panel);
+  padding:12px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.team-member-card.state-collision { border-left-color:var(--r); }
+.team-member-card.state-multi { border-left-color:#d97706; }
+.team-member-card.state-normal { border-left-color:#16a34a; }
+.team-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--b); padding-bottom:8px; }
+.team-card-head h3 { margin:0 0 4px; font-size:14px; }
+.team-card-badges { display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+.team-standup-sections { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+.team-standup-group h4 { margin:0 0 6px; font-size:12px; color:var(--m); }
+.team-config-row { flex-wrap:wrap; }
+
 @media(max-width:1100px) {
+  .team-standup-grid, .team-standup-sections { grid-template-columns:minmax(0,1fr); }
   .kanban-board { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .portfolio-actions-grid { grid-template-columns:minmax(0, 1fr); }
 }

@@ -244,6 +244,61 @@ export function installOwnerPanel($, { apiUrl, getProject, onRename, onChanged }
   });
 
   add?.addEventListener('click', () => { if (panel?.data && panelIsCurrent(panel)) openEditor('add', panel); });
+  $('importFromTeamBtn')?.addEventListener('click', async () => {
+    if (!panel?.data || !panelIsCurrent(panel)) return;
+    const session = panel;
+    const { projectId } = session.base;
+    notice.textContent = '正在从全局团队导入成员…';
+    try {
+      const teamRes = await fetch('/api/team');
+      const teamData = await teamRes.json().catch(() => null);
+      if (!teamRes.ok || !Array.isArray(teamData?.members)) throw new Error(teamData?.message || '无法读取全局团队配置');
+      if (!teamData.members.length) {
+        notice.textContent = '全局团队配置为空，请先在「团队与负载」中添加成员。';
+        return;
+      }
+      const [latest, latestClaims] = await Promise.all([request(projectId), requestOptionalClaims(projectId)]);
+      if (!panelIsCurrent(session)) return;
+      const roster = [...latest.roster];
+      const existingOwnerKeys = new Set(roster.map((r) => keyOf(r.name)));
+      const claimsSnapshot = latestClaims || session.claimsData;
+      const claimsRoster = Array.isArray(claimsSnapshot?.configuredRoster) ? [...claimsSnapshot.configuredRoster] : [];
+      const existingClaimKeys = new Set(claimsRoster.map((r) => keyOf(r.id)));
+      let addedCount = 0;
+      for (const m of teamData.members) {
+        const k = keyOf(m.id);
+        const role = m.group || (m.label && m.label !== m.id ? m.label : '');
+        if (!existingOwnerKeys.has(k)) {
+          existingOwnerKeys.add(k);
+          roster.push({ name: m.id, role, active: true });
+          addedCount++;
+        }
+        if (!existingClaimKeys.has(k)) {
+          existingClaimKeys.add(k);
+          claimsRoster.push({
+            id: m.id,
+            label: role ? `${m.id} (${role})` : m.id,
+            kind: m.kind || inferActorKind(m.id),
+            defaultTtlMinutes: m.defaultTtlMinutes || defaultClaimTtl(m.kind || 'human'),
+          });
+        }
+      }
+      if (!addedCount) {
+        notice.textContent = '全局团队成员均已在当前项目名录中。';
+        return;
+      }
+      const result = await request(projectId, '/api/owners', { owners: roster });
+      const updatedClaims = await requestOptionalClaims(projectId, { action: 'roster', roster: claimsRoster });
+      const nextClaims = updatedClaims ? { ...claimsSnapshot, configuredRoster: updatedClaims.roster || claimsRoster } : claimsSnapshot;
+      if (!panelIsCurrent(session)) return;
+      session.claimsData = nextClaims;
+      session.data = { ...result, owners: mergeRosterMembers(result, nextClaims) };
+      renderList(session, `已从全局团队导入 ${addedCount} 位成员。`);
+      if (projectMatches(session.base)) await onChanged?.();
+    } catch (err) {
+      if (panelIsCurrent(session)) notice.textContent = err.message || '导入全局团队失败';
+    }
+  });
   list?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-owner-action]');
     if (!button || !panel?.data || !panelIsCurrent(panel)) return;

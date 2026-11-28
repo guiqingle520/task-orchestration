@@ -5,6 +5,7 @@ import { installM5Panels } from './m5-panels.js';
 import { filterTasks, followUpTasks, milestoneDelay, normalizeQuery, readTaskLink, taskLinkUrl } from './m6.js';
 import { closeSearchPicker, enhanceSearchPicker, syncSearchPicker } from './search-picker.js';
 import { installPortfolio } from './portfolio-panel.js';
+import { installTeamPanel } from './team-panel.js';
 import { PROJECT_HEALTH_LABELS } from './portfolio.js';
 import { installTimelineView } from './timeline-view.js';
 import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
@@ -43,6 +44,7 @@ let pendingTaskLink = readTaskLink(pageSearch);
 let currentProjectId = pageSearch.get('project') || '';
 let scrollToDeliveries = !pendingTaskLink && globalThis.location?.hash === '#deliveries';
 let portfolioActive = false;
+let teamActive = false;
 let defaultProjectId = 'default';
 let eventSource = null;
 let webhookChannelsDraft = [];
@@ -766,11 +768,11 @@ function syncProjectOptions(registry) {
 }
 
 async function refreshProjects() {
-  if (portfolioActive) return;
+  if (portfolioActive || teamActive) return;
   const sequence = ++projectsSequence;
   try {
     const res = await (await fetch('/api/projects')).json();
-    if (portfolioActive || sequence !== projectsSequence || !Array.isArray(res.projects)) return;
+    if (portfolioActive || teamActive || sequence !== projectsSequence || !Array.isArray(res.projects)) return;
     syncProjectOptions(res);
   } catch { /* 单项目回退 */ }
 }
@@ -1368,6 +1370,7 @@ document.addEventListener('dblclick', (e) => {
 
 const VIEW_META = {
   portfolio: { view: 'portfolio', title: '跨项目总览', desc: '' },
+  team: { view: 'team', title: '团队与负载', desc: '' },
   overview: { view: 'overview', title: '项目总览', desc: '' },
   timeline: { view: 'timeline', title: '计划时间线', desc: '' },
   delivery: { view: 'delivery', title: '里程碑与风险', desc: '追踪阶段交付进度、延期风险与 Webhook 预警推送。' },
@@ -1378,6 +1381,7 @@ const VIEW_META = {
 function resolveWorkspaceView(hash) {
   switch (hash) {
     case '#portfolio': return VIEW_META.portfolio;
+    case '#team': return VIEW_META.team;
     case '#timeline':
     case '#follow-up': return VIEW_META.timeline;
     case '#deliveries':
@@ -1406,29 +1410,35 @@ function updateWorkspaceNav() {
   const active = location.hash || (pendingTaskLink ? '#timeline' : '#overview');
   const meta = resolveWorkspaceView(active);
   const wasPortfolio = portfolioActive;
+  const wasTeam = teamActive;
   portfolioActive = meta.view === 'portfolio';
+  teamActive = meta.view === 'team';
+  const workspaceViewActive = portfolioActive || teamActive;
   if (meta.view !== 'timeline') void timelineView.close({ restore: false });
   if (wasPortfolio && !portfolioActive) portfolio.cancel();
+  if (wasTeam && !teamActive) teamPanel.cancel();
   if (document.body?.dataset) document.body.dataset.view = meta.view;
   $('portfolio').hidden = $('portfolioCrumb').hidden = !portfolioActive;
-  $('singleProjectView').hidden = $('project').hidden = $('plannerToggle').hidden = $('syncGit').hidden = portfolioActive;
-  if ($('viewCrumbSep')) $('viewCrumbSep').hidden = portfolioActive;
+  if ($('team')) $('team').hidden = !teamActive;
+  if ($('teamCrumb')) $('teamCrumb').hidden = !teamActive;
+  $('singleProjectView').hidden = $('project').hidden = $('plannerToggle').hidden = $('syncGit').hidden = workspaceViewActive;
+  if ($('viewCrumbSep')) $('viewCrumbSep').hidden = workspaceViewActive;
   if ($('viewCrumb')) {
-    $('viewCrumb').hidden = portfolioActive;
+    $('viewCrumb').hidden = workspaceViewActive;
     $('viewCrumb').textContent = meta.title;
   }
   const sectionHead = $('sectionViewHead');
   if (sectionHead) {
-    const showSectionHead = !portfolioActive && meta.view !== 'overview' && meta.view !== 'timeline';
+    const showSectionHead = !workspaceViewActive && meta.view !== 'overview' && meta.view !== 'timeline';
     sectionHead.hidden = !showSectionHead;
     if (showSectionHead) {
       $('sectionViewTitle').textContent = meta.title;
       $('sectionViewDesc').textContent = meta.desc;
     }
   }
-  $('updated').hidden = portfolioActive;
-  $('workspaceSkip').href = portfolioActive ? '#portfolio' : meta.view === 'timeline' ? '#timeline' : '#overview';
-  $('workspaceSkip').textContent = portfolioActive ? '跳到跨项目总览' : `跳到${meta.title}`;
+  $('updated').hidden = workspaceViewActive;
+  $('workspaceSkip').href = portfolioActive ? '#portfolio' : teamActive ? '#team' : meta.view === 'timeline' ? '#timeline' : '#overview';
+  $('workspaceSkip').textContent = portfolioActive ? '跳到跨项目总览' : teamActive ? '跳到团队与负载' : `跳到${meta.title}`;
   document.querySelectorAll('.workspace-nav a').forEach((link) => {
     if (link.dataset?.view === meta.view || link.hash === active) link.setAttribute('aria-current', 'location');
     else link.removeAttribute('aria-current');
@@ -1438,13 +1448,14 @@ function updateWorkspaceNav() {
       if (last && !planGesture) renderGantt(last.data, last.m);
     });
   }
-  return wasPortfolio !== portfolioActive;
+  return wasPortfolio !== portfolioActive || wasTeam !== teamActive;
 }
 
 async function refresh(opts) {
   const fromSse = Boolean(opts?.fromSse);
   const sequence = ++refreshSequence;
   if (portfolioActive) return portfolio.refresh($('today').value || todayLocal());
+  if (teamActive) return teamPanel.refresh($('today').value || todayLocal());
   const projectId = selectedProjectId();
   let res;
   try { res = await (await fetch(apiUrl('/api/plan'))).json(); }
@@ -1481,7 +1492,7 @@ async function refresh(opts) {
   }
   setPlanAvailable(true);
   m5Panels.syncLive(last);
-  if (fromSse && !portfolioActive && prevTasksForToast && Date.now() > suppressToastUntil) {
+  if (fromSse && !(portfolioActive || teamActive) && prevTasksForToast && Date.now() > suppressToastUntil) {
     const taskUpdates = diffExternalTaskUpdates(prevTasksForToast, last.data.tasks);
     if (taskUpdates.length) {
       recentExternalDoneIds = new Set(taskUpdates.filter((u) => u.status === 'done').map((u) => u.taskId));
@@ -1736,7 +1747,7 @@ async function copyTaskLink() {
 }
 
 async function refreshClaims(opts) {
-  if (!last || isTimeMachine || portfolioActive) return;
+  if (!last || isTimeMachine || portfolioActive || teamActive) return;
   const fromSse = Boolean(opts?.fromSse);
   const { projectId, epoch } = last;
   const seq = ++claimsSequence;
@@ -1749,7 +1760,7 @@ async function refreshClaims(opts) {
     claimsSnapshot = data;
     prevClaimsSnapshot = data.claims;
     claimsFetchFailed = false;
-    if (fromSse && prevClaimsForToast && Date.now() > suppressToastUntil) {
+    if (fromSse && !(portfolioActive || teamActive) && prevClaimsForToast && Date.now() > suppressToastUntil) {
       const titleById = Object.fromEntries(last.data.tasks.map((task) => [task.id, task.title]));
       const updates = diffExternalClaimUpdates(prevClaimsForToast, data.claims, titleById)
         .filter((u) => !(u.title.includes('释放了') && recentExternalDoneIds.has(u.taskId)));
@@ -2865,6 +2876,7 @@ const portfolio = installPortfolio({
     }
   },
 });
+const teamPanel = installTeamPanel({ esc, onTeamSaved: () => void refreshProjects() });
 const timelineView = installTimelineView({ beforeOpen: closeSearchPicker });
 globalThis.addEventListener?.('hashchange', () => {
   const modeChanged = updateWorkspaceNav();
@@ -2874,6 +2886,7 @@ globalThis.addEventListener?.('hashchange', () => {
     globalThis.scrollTo?.(0, 0);
   }
   if (portfolioActive) $('portfolio')?.focus?.({ preventScroll: true });
+  else if (teamActive) $('team')?.focus?.({ preventScroll: true });
   if (modeChanged) void refresh();
 });
 let resizeTimer = null;
@@ -3084,7 +3097,7 @@ for (const [id, label] of Object.entries({
 })) enhanceSearchPicker($(id), label);
 const ownerPanel = installOwnerPanel($, {
   apiUrl,
-  getProject: () => isTimeMachine || portfolioActive ? null : last,
+  getProject: () => isTimeMachine || portfolioActive || teamActive ? null : last,
   onRename: async (from, to) => {
     const owners = normalizeSelection(taskFilters.owner);
     if (owners.includes(from)) setTaskFilters({ ...taskFilters, owner: owners.map((o) => (o === from ? to : o)) });

@@ -9,6 +9,7 @@ import { getTaskCommitsMap, parseCommitMessage, readGitCommits, syncPlanFromComm
 import { createWorkspaces } from './workspaces.mjs';
 import { extractAcceptanceByTask } from './plan-acceptance.mjs';
 import { aggregatePortfolioActions, summarizePortfolioDetails, summarizeProject, validPortfolioDate } from './portfolio.mjs';
+import { buildTeamOverview, readTeamConfig, TeamConfigError, writeTeamConfig } from './team.mjs';
 import { createWebhookService } from './webhooks.mjs';
 import { getPlanAtCommit, HistoryError, listPlanHistory, readPlanHistory, summarizePlanFrame } from './history.mjs';
 import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
@@ -394,6 +395,35 @@ createServer((req, res) => {
       });
       return json(res, 200, { today, default: registry.default, projects, todayActions: aggregatePortfolioActions(actionBuckets) });
     } catch { return json(res, 500, { message: '无法读取工作区项目列表' }); }
+  }
+  if (url.pathname === '/api/team' && req.method === 'GET') {
+    try { return json(res, 200, readTeamConfig(configRoot)); }
+    catch (err) { return json(res, 500, { message: err.message || '无法读取团队配置' }); }
+  }
+  if (url.pathname === '/api/team' && req.method === 'POST') {
+    return withJsonBody(req, res, 128 * 1024, (input) => {
+      try { return json(res, 200, { ok: true, ...writeTeamConfig(configRoot, input) }); }
+      catch (err) { return json(res, err instanceof TeamConfigError ? err.status : 400, { message: err.message }); }
+    });
+  }
+  if (url.pathname === '/api/team/overview' && req.method === 'GET') {
+    const today = url.searchParams.get('today') ?? dashboardToday();
+    if (!validPortfolioDate(today)) return json(res, 400, { message: '统计日必须是有效的 YYYY-MM-DD 日期' });
+    try {
+      const registry = workspaces.read();
+      const teamConfig = readTeamConfig(configRoot);
+      const overview = buildTeamOverview({
+        today,
+        projects: registry.projects,
+        readSnapshot: ({ id }) => readPlanSnapshot(workspaces.get(id, registry)),
+        readClaimsFn: ({ id }) => readClaims(workspaces.get(id, registry).planPath),
+        readOwnersFn: ({ id }) => readOwnersConfig(workspaces.get(id, registry)),
+        teamConfig,
+      });
+      return json(res, 200, overview);
+    } catch (err) {
+      return json(res, 500, { message: err.message || '无法生成团队负载与站会视图' });
+    }
   }
   if (url.pathname === '/api/projects' && req.method === 'GET') {
     try {
