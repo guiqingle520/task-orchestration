@@ -195,6 +195,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   --accent-soft:#eef4ff; --acc:#2458cf; --t:#141414; --m:#575757; --b:#d8d8d8;
   --line:#eaeaea; --bg:#f6f6f6; --ms:#626262; --g:#176843; --r:#a52a23; --y:#774000;
   --amber-bg:#fff3d6; --amber-line:#d6a143; --red-bg:#fff0ef; --red-line:#df9e99;
+  --panel:#ffffff; --panel-2:#f8fafc; --rad:10px;
   --rh:52px; --lw:clamp(188px,15.6vw,224px); padding:0; background:#fff;
 }
 .dashboard :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
@@ -403,6 +404,17 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .stage-summary { color:var(--m); font-size:11px; margin:2px 0 5px; }
 .stage-progress progress { display:block; width:100%; height:7px; margin:7px 0 4px; accent-color:var(--acc); }
 .stage-progress .stage-jump { padding:2px 6px; font-size:11px; }
+.ms-table th:last-child, .ms-table td.ms-action-cell { text-align:right; }
+.ms-stage-cell { display:flex; align-items:center; gap:6px; flex-wrap:wrap; white-space:normal; }
+.ms-progress-cell { display:flex; align-items:center; gap:8px; min-width:110px; }
+.ms-progress-cell progress { flex:1; height:7px; accent-color:var(--acc); }
+.ms-progress-cell span { font-size:11px; font-weight:600; color:var(--t); min-width:30px; text-align:right; }
+.ms-forecast { display:block; font-size:11px; color:var(--r); }
+.ms-table-wrap { height:270px; overflow:auto; }
+.ms-search { min-height:28px; padding:3px 8px; border:1px solid var(--b); border-radius:6px; font:inherit; font-size:12px; min-width:160px; max-width:220px; }
+.ms-pagination { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:10px; }
+.ms-page-btns { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+.dashboard .ms-page-btns button.on { background:var(--t); color:#fff; border-color:var(--t); }
 .dashboard .lgroup .milestone-delay { flex:none; font-size:10px; padding:1px 4px; }
 
 .search-picker { display:inline-flex; position:relative; min-width:0; max-width:100%; font-size:12px; }
@@ -1159,6 +1171,7 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   border:1px solid var(--b);
   border-radius:var(--rad);
   padding:8px;
+  min-width:0;
   min-height:180px;
   display:flex;
   flex-direction:column;
@@ -1193,12 +1206,30 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .kanban-card[draggable="false"] { cursor:default; }
 .kanban-card.dragging { opacity:.5; }
 .kanban-card.sel { outline:2px solid var(--acc); outline-offset:-1px; }
-.kanban-card.st-todo { border-left-color:#94a3b8; }
-.kanban-card.st-doing { border-left-color:var(--acc); }
-.kanban-card.st-blocked { border-left-color:var(--r); }
-.kanban-card.st-done { border-left-color:#16a34a; }
+.kanban-card.st-todo { border-left-color:#94a3b8; background:linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); }
+.kanban-card.st-doing { border-left-color:var(--acc); background:linear-gradient(180deg, #ffffff 0%, #f0f7ff 100%); }
+.kanban-card.st-blocked { border-left-color:var(--r); background:linear-gradient(180deg, #ffffff 0%, #fef2f2 100%); }
+.kanban-card.st-done { border-left-color:#16a34a; background:linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%); }
 .kanban-card-head { display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:11px; color:var(--m); }
-.kanban-card-id { font-weight:700; color:var(--t); }
+.kanban-card-id { font-weight:700; color:var(--t); display:inline-flex; align-items:center; gap:5px; }
+.kanban-card-seq {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:19px;
+  height:19px;
+  padding:0 5px;
+  border-radius:999px;
+  background:#e2e8f0;
+  color:#475569;
+  font-size:10px;
+  font-weight:700;
+  font-variant-numeric:tabular-nums;
+}
+.kanban-card.st-todo .kanban-card-seq { background:#e2e8f0; color:#475569; }
+.kanban-card.st-doing .kanban-card-seq { background:#dbeafe; color:#1d4ed8; }
+.kanban-card.st-blocked .kanban-card-seq { background:#fee2e2; color:#b91c1c; }
+.kanban-card.st-done .kanban-card-seq { background:#dcfce7; color:#15803d; }
 .kanban-card-title { font-size:12px; font-weight:600; color:var(--t); line-height:1.35; word-break:break-word; }
 .kanban-card-meta { font-size:11px; color:var(--m); display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center; }
 .kanban-card-foot { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:2px; }
@@ -1207,6 +1238,96 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
 .kanban-card.st-done .kanban-card-progress i { background:#16a34a; }
 .kanban-card.st-blocked .kanban-card-progress i { background:var(--r); }
 .kanban-done-toggle { align-self:stretch; font-size:11px; }
+.kanban-deck-wrap { padding:4px 4px 14px; }
+.kanban-deck {
+  position:relative;
+  width:100%;
+  min-width:0;
+  text-align:left;
+  padding:0;
+  border:0;
+  background:transparent;
+  cursor:pointer;
+  display:block;
+}
+.kanban-deck::before,
+.kanban-deck::after {
+  content:"";
+  position:absolute;
+  inset:0;
+  border-radius:var(--rad);
+  border:1px solid var(--b);
+  background:var(--panel);
+  pointer-events:none;
+  transition:transform .16s ease;
+}
+.kanban-deck::before { transform:translate(5px, 9px) rotate(1.6deg); background:#f8fafc; z-index:0; }
+.kanban-deck::after { transform:translate(2.5px, 4.5px) rotate(-0.9deg); background:#fcfcfd; z-index:1; }
+.kanban-deck:hover::before { transform:translate(7px, 11px) rotate(2.4deg); }
+.kanban-deck:hover::after { transform:translate(3px, 5px) rotate(-1.3deg); }
+.kanban-deck-front {
+  position:relative;
+  z-index:2;
+  background:var(--panel);
+  border:1px solid var(--b);
+  border-left:4px solid #94a3b8;
+  border-radius:var(--rad);
+  padding:11px 11px 10px;
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  box-shadow:0 4px 12px rgba(15, 23, 42, .08);
+  transition:border-color .15s, transform .15s;
+}
+.kanban-deck:hover .kanban-deck-front { border-color:var(--acc); transform:translateY(-1px); }
+.kanban-deck.st-todo .kanban-deck-front { border-left-color:#94a3b8; background:linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); }
+.kanban-deck.st-doing .kanban-deck-front { border-left-color:var(--acc); background:linear-gradient(180deg, #ffffff 0%, #f0f7ff 100%); }
+.kanban-deck.st-blocked .kanban-deck-front { border-left-color:var(--r); background:linear-gradient(180deg, #ffffff 0%, #fef2f2 100%); }
+.kanban-deck.st-done .kanban-deck-front { border-left-color:#16a34a; background:linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%); }
+.kanban-deck.st-todo::after { background:#f8fafc; border-color:#cbd5e1; }
+.kanban-deck.st-todo::before { background:#f1f5f9; border-color:#cbd5e1; }
+.kanban-deck.st-doing::after { background:#eff6ff; border-color:#bfdbfe; }
+.kanban-deck.st-doing::before { background:#dbeafe; border-color:#93c5fd; }
+.kanban-deck.st-blocked::after { background:#fef2f2; border-color:#fecaca; }
+.kanban-deck.st-blocked::before { background:#fee2e2; border-color:#fca5a5; }
+.kanban-deck.st-done::after { background:#f0fdf4; border-color:#bbf7d0; }
+.kanban-deck.st-done::before { background:#dcfce7; border-color:#86efac; }
+.kanban-deck-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.kanban-deck-badge {
+  display:inline-flex;
+  align-items:center;
+  padding:2px 8px;
+  border-radius:999px;
+  background:var(--t);
+  color:#fff;
+  font-size:11px;
+  font-weight:700;
+}
+.kanban-deck-action { font-size:11px; color:var(--acc); font-weight:600; }
+.kanban-deck-title { font-size:13px; font-weight:700; color:var(--t); line-height:1.35; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.kanban-deck-sub { font-size:11px; color:var(--m); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kanban-stack-dialog { width:min(960px, 94vw); max-height:88vh; }
+.kanban-stack-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+.kanban-stack-head h2 { margin:0; }
+.kanban-stack-search { min-width:220px; flex:1; max-width:300px; }
+.kanban-stack-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+  gap:10px;
+  max-height:46vh;
+  overflow-y:auto;
+  padding:4px 2px 6px;
+}
+.kanban-stack-grid .kanban-card { cursor:pointer; }
+.kanban-stack-detail {
+  margin-top:12px;
+  padding:10px 12px;
+  border:1px solid var(--b);
+  border-radius:var(--rad);
+  background:var(--panel-2);
+  font-size:12px;
+}
+.kanban-stack-detail:empty { display:none; }
 .kanban-empty { margin:6px 2px; font-size:12px; color:var(--m); }
 
 /* M12 T-84: 跨项目实时计数、跨项目今日行动与右上角 Toast */
@@ -1394,9 +1515,9 @@ td.l1{background:#dcfce7}td.l2{background:#fef3c7}td.l3{background:#fecaca;font-
   background:var(--panel);
   font-size:12px;
 }
-.team-task-link { display:flex; align-items:center; gap:6px; min-width:0; text-decoration:none; color:var(--t); font-weight:600; }
+.team-task-link { display:flex; align-items:center; gap:6px; min-width:0; text-decoration:none; color:var(--t); font-weight:600; font-size:12px; line-height:1.35; }
 .team-task-link:hover .team-task-title { color:var(--acc); text-decoration:underline; }
-.team-task-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.team-task-title { overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .team-task-meta { display:flex; align-items:center; gap:5px; flex-shrink:0; flex-wrap:wrap; }
 .team-task-due { font-size:11px; color:var(--m); font-variant-numeric:tabular-nums; }
 .team-matrix-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; min-width:860px; }
@@ -1431,6 +1552,39 @@ tr.state-normal .team-matrix-member { border-left-color:#16a34a; }
 .team-matrix-item a:hover { color:var(--acc); text-decoration:underline; }
 .team-matrix-tags { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
 .team-config-row { flex-wrap:wrap; }
+.project-load-summary { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.project-load-cards {
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+  gap:8px;
+  padding:4px 0;
+}
+.project-load-cards .kanban-card { cursor:default; }
+.chart-donut-wrap { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; padding:4px 0; }
+.chart-donut-svg { width:136px; height:144px; flex:none; }
+.chart-donut-legend { display:grid; gap:6px; flex:1; min-width:150px; }
+.chart-legend-btn {
+  display:grid;
+  grid-template-columns:auto 1fr auto auto;
+  align-items:center;
+  gap:7px;
+  padding:5px 8px;
+  border:1px solid var(--b);
+  border-radius:6px;
+  background:var(--panel-2);
+  font:inherit;
+  font-size:12px;
+  color:var(--t);
+  text-align:left;
+  cursor:pointer;
+}
+.chart-legend-btn:hover { border-color:var(--acc); background:var(--accent-soft); }
+.chart-legend-btn small { color:var(--m); font-size:11px; }
+.chart-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex:none; }
+.chart-wide-svg { width:100%; height:auto; display:block; }
+.chart-block { margin:8px 0 6px; padding:8px 10px; border:1px solid var(--b); border-radius:var(--rad); background:var(--panel-2); }
+.chart-inline-legend { display:flex; flex-wrap:wrap; gap:10px; font-size:11px; color:var(--m); margin-bottom:4px; }
+.chart-inline-legend span { display:inline-flex; align-items:center; gap:4px; }
 
 @media(max-width:1100px) {
   .team-standup-sections { grid-template-columns:minmax(0,1fr); }

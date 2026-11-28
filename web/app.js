@@ -14,6 +14,15 @@ import { installOwnerPanel, ownerLabel, UNASSIGNED } from './owner-panel.js';
 import { defaultClaimTtl, inferActorKind } from './claims.js';
 import { groupKanbanTasks, kanbanStatusTransition } from './kanban.js';
 import { diffExternalClaimUpdates, diffExternalTaskUpdates, installToastHost } from './toast.js';
+import {
+  computeMemberWorkload,
+  computeStatusBreakdown,
+  computeThroughput,
+  renderMemberLoadSvg,
+  renderMilestoneCompareSvg,
+  renderStatusDonutSvg,
+  renderThroughputSvg,
+} from './charts.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -50,8 +59,15 @@ let eventSource = null;
 let webhookChannelsDraft = [];
 let webhookProjects = [];
 let timelineMode = 'gantt';
-let kanbanDoneExpanded = false;
+let kanbanStackStatus = null;
 let kanbanDragTaskId = null;
+const expandedLoadMembers = new Set();
+let loadMemberInitialized = false;
+let milestonePage = 1;
+const MS_PAGE_SIZE = 5;
+let overviewChartMode = 'burndown';
+let milestoneViewMode = 'list';
+let loadViewMode = 'table';
 let kanbanBusy = false;
 let lastNotifiedProjectId = null;
 let prevTaskSnapshot = null;
@@ -256,6 +272,47 @@ $('timelineFocusPlanner').addEventListener('click', () => $('plannerMode').click
 
 $('burndownScope').addEventListener('change', () => {
   if (last) renderBurndown(last.data, last.m);
+});
+
+function syncChartTabGroup(container, attr, activeVal) {
+  container?.querySelectorAll?.(`[${attr}]`)?.forEach?.((btn) => {
+    const on = btn.getAttribute(attr) === activeVal;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
+$('overviewChartTabs')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-chart-tab]');
+  if (!btn) return;
+  overviewChartMode = btn.dataset.chartTab || 'burndown';
+  syncChartTabGroup($('overviewChartTabs'), 'data-chart-tab', overviewChartMode);
+  if (last) renderBurndown(last.data, last.m);
+});
+
+$('burndownChart')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-chart-status]');
+  if (!btn || !$('filterStatus')) return;
+  $('filterStatus').value = btn.dataset.chartStatus || 'all';
+  syncSearchPicker($('filterStatus'));
+  ensureTimelineView();
+  if (last) renderAll(false);
+});
+
+$('milestoneViewTabs')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-ms-view]');
+  if (!btn) return;
+  milestoneViewMode = btn.dataset.msView || 'list';
+  syncChartTabGroup($('milestoneViewTabs'), 'data-ms-view', milestoneViewMode);
+  if (last) renderMilestones(last.m);
+});
+
+$('loadViewTabs')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-load-view]');
+  if (!btn) return;
+  loadViewMode = btn.dataset.loadView || 'table';
+  syncChartTabGroup($('loadViewTabs'), 'data-load-view', loadViewMode);
+  if (last) renderLoad(last.m);
 });
 
 function nextTaskId(tasks) {
@@ -813,7 +870,12 @@ function clearPlan() {
   prevClaimsSnapshot = null;
   recentExternalDoneIds = new Set();
   toastHost.clear();
-  kanbanDoneExpanded = false;
+  kanbanStackStatus = null;
+  loadMemberInitialized = false;
+  expandedLoadMembers.clear();
+  milestonePage = 1;
+  if ($('milestoneSearch')) $('milestoneSearch').value = '';
+  if ($('kanbanStackDialog')?.open) $('kanbanStackDialog').close();
   showKanbanNotice('');
   last = null;
   resetPlanGesture();
@@ -1774,6 +1836,7 @@ async function refreshClaims(opts) {
     renderTodayActions(last.data, last.m);
     if (!planGesture) renderGantt(last.data, last.m);
     renderDetail(last.data, last.m);
+    renderLoad(last.m);
     renderClaimsLiveCard(last.data, last.m);
     for (const id of ['filterOwner', 'todayActionOwner']) syncSearchPicker($(id));
     if ($('handoffDialog')?.open && handoffTaskId) syncHandoffDialogState(handoffTaskId, false);
@@ -1782,6 +1845,7 @@ async function refreshClaims(opts) {
     claimsFetchFailed = true;
     renderTodayActions(last.data, last.m);
     renderDetail(last.data, last.m);
+    renderLoad(last.m);
     renderClaimsLiveCard(last.data, last.m);
   }
 }
@@ -2036,6 +2100,23 @@ function renderBurndown(data, m) {
   scopeEl.innerHTML = `<option value="all">全部里程碑</option>` +
     data.milestones.map((ms) => `<option value="${esc(ms.id)}">${esc(ms.id)} · ${esc(ms.name)}</option>`).join('');
   scopeEl.value = data.milestones.some((ms) => ms.id === prevScope) ? prevScope : 'all';
+  if ($('burndownLegend')) $('burndownLegend').hidden = overviewChartMode !== 'burndown';
+
+  if (overviewChartMode === 'status') {
+    const bdStatus = computeStatusBreakdown(data.tasks, scopeEl.value);
+    $('burndownSummary').innerHTML =
+      `<div class="burndown-value"><strong>${bdStatus.donePct}%</strong> 完成率</div><div>共 ${bdStatus.total} 项 · 完成 ${bdStatus.counts.done} · 进行 ${bdStatus.counts.doing} · 阻塞 ${bdStatus.counts.blocked} · 待办 ${bdStatus.counts.todo}</div>`;
+    $('burndownChart').innerHTML = renderStatusDonutSvg(bdStatus, esc);
+    return;
+  }
+
+  if (overviewChartMode === 'throughput') {
+    const tp = computeThroughput(data.tasks, m.today, 14, scopeEl.value);
+    $('burndownSummary').innerHTML =
+      `<div class="burndown-value"><strong>${tp.totalDone}</strong> 项交付</div><div>近 14 天完成 · 日均 ${tp.avgPerDay} 项/天 · 含 7 日均值线</div>`;
+    $('burndownChart').innerHTML = renderThroughputSvg(tp, esc);
+    return;
+  }
 
   let bd;
   try { bd = computeBurndown(data, m.today, scopeEl.value); }
@@ -2145,44 +2226,99 @@ function renderCtrl() {
     plannerBtns;
 }
 
+function renderKanbanCard(t, m, { draggable = !isTimeMachine, seq = null } = {}) {
+  const claim = getTaskClaim(t.id);
+  const ownerLine = formatOwnerAndActor(t, claim);
+  const days = toDay(t.end) - toDay(m.today);
+  const dueText = t.status === 'done'
+    ? `完成于 ${t.actualEnd || t.end}`
+    : days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `截止 ${t.end}`;
+  const editBtn = isTimeMachine ? '' : `<button type="button" class="btn-sm" data-quick-edit="${esc(t.id)}">改状态</button>`;
+  const seqTag = seq ? `<span class="kanban-card-seq">${seq}</span>` : '';
+  return `<article class="kanban-card st-${esc(t.status)} ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" data-kanban-card="${esc(t.id)}" draggable="${draggable ? 'true' : 'false'}">
+    <div class="kanban-card-head">
+      <span class="kanban-card-id">${seqTag}${esc(t.id)} · ${esc(t.milestone)}</span>
+      <span>${t.progress}%</span>
+    </div>
+    <div class="kanban-card-title">${esc(t.title)}</div>
+    <div class="kanban-card-meta"><span>${esc(ownerLine)}</span><span>${esc(dueText)}</span>${renderClaimChip(t)}</div>
+    <div class="kanban-card-foot">
+      <span class="kanban-card-progress" aria-hidden="true"><i style="width:${t.progress}%"></i></span>
+      ${editBtn}
+    </div>
+  </article>`;
+}
+
+function renderKanbanStackModal() {
+  if (!last || !kanbanStackStatus || !$('kanbanStackGrid')) return;
+  const { data, m } = last;
+  const visibleTasks = filterTasks(data.tasks, { ...taskFilters, today: m.today });
+  const col = groupKanbanTasks(visibleTasks, { doneLimit: 0, openLimit: 0 }).find((c) => c.status === kanbanStackStatus);
+  if (!col) return;
+  if ($('kanbanStackTitle')) $('kanbanStackTitle').textContent = `${col.label}（共 ${col.total} 项）`;
+  const q = normalizeQuery($('kanbanStackSearch')?.value || '');
+  const seqMap = new Map(col.allTasks.map((t, idx) => [t.id, idx + 1]));
+  const matched = q
+    ? col.allTasks.filter((t) => `${t.id} ${t.title} ${t.owner} ${t.milestone}`.toLowerCase().includes(q))
+    : col.allTasks;
+  renderMarkup(
+    $('kanbanStackGrid'),
+    matched.map((t) => renderKanbanCard(t, m, { draggable: false, seq: seqMap.get(t.id) })).join('') || '<p class="kanban-empty">没有匹配的任务。</p>',
+  );
+  const detailEl = $('kanbanStackDetail');
+  if (detailEl) {
+    const selTask = matched.find((t) => t.id === selected) || data.tasks.find((t) => t.id === selected && t.status === kanbanStackStatus);
+    if (selTask) {
+      const claim = getTaskClaim(selTask.id);
+      const editBtn = isTimeMachine ? '' : ` <button type="button" class="btn-sm" data-kanban-stack-edit="${esc(selTask.id)}">编辑任务</button>`;
+      detailEl.innerHTML = `<b>${esc(selTask.id)} · ${esc(selTask.title)}</b> · ${STATUS[selTask.status]} (${selTask.progress}%) · ${esc(formatOwnerAndActor(selTask, claim))} · 计划 ${esc(selTask.start)} ~ ${esc(selTask.end)}${selTask.actualEnd ? ` · 实际完成 ${esc(selTask.actualEnd)}` : ''} · 依赖 ${esc((selTask.deps || []).join('、') || '无')}${editBtn}`;
+    } else {
+      detailEl.innerHTML = '';
+    }
+  }
+}
+
+function openKanbanStackModal(status) {
+  if (!last || !status) return;
+  kanbanStackStatus = status;
+  if ($('kanbanStackSearch')) $('kanbanStackSearch').value = '';
+  renderKanbanStackModal();
+  $('kanbanStackDialog')?.showModal?.();
+}
+
 function renderKanban(data, m, visibleTasks) {
   const kanbanEl = $('kanban');
   $('gantt').hidden = true;
   if (!kanbanEl) return;
   kanbanEl.hidden = false;
   $('timelineRange').textContent = isTimeMachine ? '看板视图 · 历史回放（只读）' : '看板视图 · 拖拽卡片跨列更新状态';
-  const columns = groupKanbanTasks(visibleTasks, { doneExpanded: kanbanDoneExpanded });
+  const columns = groupKanbanTasks(visibleTasks, { doneLimit: 2, openLimit: 4 });
   renderMarkup(kanbanEl, columns.map((col) => {
-    const cardsHtml = col.visibleTasks.map((t) => {
-      const claim = getTaskClaim(t.id);
-      const ownerLine = formatOwnerAndActor(t, claim);
-      const days = toDay(t.end) - toDay(m.today);
-      const dueText = t.status === 'done'
-        ? `完成于 ${t.actualEnd || t.end}`
-        : days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `截止 ${t.end}`;
-      const editBtn = isTimeMachine ? '' : `<button type="button" class="btn-sm" data-quick-edit="${esc(t.id)}">改状态</button>`;
-      return `<article class="kanban-card st-${esc(t.status)} ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" data-kanban-card="${esc(t.id)}" draggable="${isTimeMachine ? 'false' : 'true'}">
-        <div class="kanban-card-head">
-          <span class="kanban-card-id">${esc(t.id)} · ${esc(t.milestone)}</span>
-          <span>${t.progress}%</span>
-        </div>
-        <div class="kanban-card-title">${esc(t.title)}</div>
-        <div class="kanban-card-meta"><span>${esc(ownerLine)}</span><span>${esc(dueText)}</span>${renderClaimChip(t)}</div>
-        <div class="kanban-card-foot">
-          <span class="kanban-card-progress" aria-hidden="true"><i style="width:${t.progress}%"></i></span>
-          ${editBtn}
-        </div>
-      </article>`;
-    }).join('') || '<p class="kanban-empty">暂无任务</p>';
-    const collapseBtn = (col.status === 'done' && (col.hiddenCount > 0 || (kanbanDoneExpanded && col.total > 6)))
-      ? `<button type="button" class="btn-sm kanban-done-toggle" data-kanban-done-toggle>${kanbanDoneExpanded ? '收起较早已完成' : `展开其余 ${col.hiddenCount} 项已完成`}</button>`
-      : '';
+    let bodyHtml;
+    if (col.stacked && col.allTasks.length) {
+      const top = col.allTasks[0];
+      const previewIds = col.allTasks.slice(0, 4).map((t) => t.id).join('、');
+      bodyHtml = `<div class="kanban-deck-wrap">
+        <button type="button" class="kanban-deck st-${esc(col.status)}" data-kanban-deck="${esc(col.status)}">
+          <span class="kanban-deck-front">
+            <span class="kanban-deck-top">
+              <span class="kanban-deck-badge">共 ${col.total} 项${esc(col.label)}</span>
+              <span class="kanban-deck-action">点击展开全部 ›</span>
+            </span>
+            <span class="kanban-deck-title">${esc(top.id)} · ${esc(top.title)}</span>
+            <span class="kanban-deck-sub">包含 ${esc(previewIds)}${col.total > 4 ? ' 等' : ''}</span>
+          </span>
+        </button>
+      </div>`;
+    } else {
+      bodyHtml = `<div class="kanban-cards">${col.allTasks.map((t, idx) => renderKanbanCard(t, m, { seq: idx + 1 })).join('') || '<p class="kanban-empty">暂无任务</p>'}</div>`;
+    }
     return `<section class="kanban-col" data-kanban-col="${esc(col.status)}" aria-label="${esc(col.label)}列">
       <header class="kanban-col-head"><span>${esc(col.label)}</span><span class="kanban-col-count">${col.total}</span></header>
-      <div class="kanban-cards">${cardsHtml}</div>
-      ${collapseBtn}
+      ${bodyHtml}
     </section>`;
   }).join(''));
+  if (kanbanStackStatus && $('kanbanStackDialog')?.open) renderKanbanStackModal();
 }
 
 async function moveKanbanTask(taskId, targetStatus) {
@@ -2242,10 +2378,30 @@ $('timelineModeSwitch')?.addEventListener('click', (e) => {
 });
 
 $('kanban')?.addEventListener('click', (e) => {
-  const toggle = e.target?.closest?.('[data-kanban-done-toggle]');
-  if (!toggle || !last) return;
-  kanbanDoneExpanded = !kanbanDoneExpanded;
-  renderGantt(last.data, last.m);
+  const deck = e.target?.closest?.('[data-kanban-deck]');
+  if (deck && last) openKanbanStackModal(deck.dataset.kanbanDeck);
+});
+$('closeKanbanStack')?.addEventListener('click', () => {
+  kanbanStackStatus = null;
+  $('kanbanStackDialog')?.close?.();
+});
+$('kanbanStackDialog')?.addEventListener('close', () => {
+  if (!$('kanbanStackDialog').open) kanbanStackStatus = null;
+});
+$('kanbanStackSearch')?.addEventListener('input', () => renderKanbanStackModal());
+$('kanbanStackGrid')?.addEventListener('click', (e) => {
+  const card = e.target?.closest?.('[data-kanban-card]');
+  if (!card || !last) return;
+  e.stopPropagation?.();
+  selected = card.dataset.kanbanCard;
+  renderDetail(last.data, last.m);
+  renderKanbanStackModal();
+});
+$('kanbanStackDetail')?.addEventListener('click', (e) => {
+  const editBtn = e.target?.closest?.('[data-kanban-stack-edit]');
+  if (!editBtn || !last || isTimeMachine) return;
+  const task = last.data.tasks.find((item) => item.id === editBtn.dataset.kanbanStackEdit);
+  if (task) openTaskModal(task);
 });
 
 $('kanban')?.addEventListener('dragstart', (e) => {
@@ -2588,33 +2744,205 @@ function delayBadge(ms) {
 }
 
 function renderMilestones(m) {
-  renderMarkup($('milestones'), m.milestones.map((ms) => {
+  if (!m.milestones.length) {
+    renderMarkup($('milestones'), '<p class="empty">暂无里程碑</p>');
+    return;
+  }
+  const q = normalizeQuery($('milestoneSearch')?.value || '');
+  const filtered = q
+    ? m.milestones.filter((ms) => `${ms.id} ${ms.name}`.toLowerCase().includes(q))
+    : m.milestones;
+  if (!filtered.length) {
+    renderMarkup($('milestones'), '<div class="team-table-wrap ms-table-wrap"><p class="gantt-empty">没有匹配的里程碑。</p></div>');
+    return;
+  }
+  if (milestoneViewMode === 'chart') {
+    renderMarkup($('milestones'), renderMilestoneCompareSvg(filtered, milestoneDelay, esc));
+    return;
+  }
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / MS_PAGE_SIZE));
+  if (milestonePage > totalPages) milestonePage = totalPages;
+  if (milestonePage < 1) milestonePage = 1;
+  const startIdx = (milestonePage - 1) * MS_PAGE_SIZE;
+  const pageItems = filtered.slice(startIdx, startIdx + MS_PAGE_SIZE);
+
+  const rows = pageItems.map((ms) => {
     const progress = Math.round(ms.progress);
-    const subtitle = ms.taskCount ? `${progress}% · 已完成 ${ms.doneCount}/${ms.taskCount} 项` : '暂无任务 · 0/0 项';
     const delay = milestoneDelay(ms);
-    return `<article class="stage-progress">
-      <div class="stage-heading"><span class="ms-id">${esc(ms.id)}</span><strong>${esc(ms.name)}</strong>${delayBadge(ms)}</div>
-      ${ms.taskCount ? `<progress value="${ms.progress}" max="100" aria-label="${esc(ms.name)}完成进度"></progress>` : ''}
-      <div class="stage-summary"><span>${subtitle}</span><span>计划 <time datetime="${ms.due}">${ms.due}</time></span>
-        ${delay?.label === '预计延期' ? `<span>预计 <time datetime="${ms.forecast}">${ms.forecast}</time></span>` : ''}
-      </div>
-      ${ms.taskCount ? `<button type="button" class="btn-sm stage-jump" data-show-stage="${esc(ms.id)}" aria-label="查看${esc(ms.name)}的甘特任务">查看阶段任务</button>` : ''}
-    </article>`;
-  }).join('') || '<p class="empty">暂无里程碑</p>');
+    const countText = ms.taskCount ? `${ms.doneCount} / ${ms.taskCount}` : '0 / 0';
+    const progressHtml = ms.taskCount
+      ? `<div class="ms-progress-cell"><progress value="${ms.progress}" max="100" aria-label="${esc(ms.name)}完成进度"></progress><span>${progress}%</span></div>`
+      : '<span class="empty">暂无任务</span>';
+    const dueHtml = `<time datetime="${ms.due}">${ms.due}</time>${delay?.label === '预计延期' ? `<small class="ms-forecast">预计 <time datetime="${ms.forecast}">${ms.forecast}</time></small>` : ''}`;
+    const actionHtml = ms.taskCount
+      ? `<button type="button" class="btn-sm stage-jump" data-show-stage="${esc(ms.id)}" aria-label="查看${esc(ms.name)}的甘特任务">查看阶段任务</button>`
+      : '<span class="empty">—</span>';
+    return `<tr>
+      <td><div class="ms-stage-cell"><span class="ms-id">${esc(ms.id)}</span><strong>${esc(ms.name)}</strong>${delayBadge(ms)}</div></td>
+      <td>${countText}</td>
+      <td>${progressHtml}</td>
+      <td>${dueHtml}</td>
+      <td class="ms-action-cell">${actionHtml}</td>
+    </tr>`;
+  }).join('');
+
+  const pageBtns = totalPages > 1
+    ? `<div class="ms-pagination" role="navigation" aria-label="里程碑分页">
+        <span class="empty">共 ${total} 项 · 第 ${milestonePage} / ${totalPages} 页</span>
+        <div class="ms-page-btns">
+          <button type="button" class="btn-sm" data-ms-page="${milestonePage - 1}" ${milestonePage <= 1 ? 'disabled' : ''}>上一页</button>
+          ${Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => `<button type="button" class="btn-sm ${p === milestonePage ? 'on' : ''}" data-ms-page="${p}" aria-current="${p === milestonePage ? 'page' : 'false'}">${p}</button>`).join('')}
+          <button type="button" class="btn-sm" data-ms-page="${milestonePage + 1}" ${milestonePage >= totalPages ? 'disabled' : ''}>下一页</button>
+        </div>
+      </div>`
+    : '';
+
+  renderMarkup($('milestones'), `<div class="team-table-wrap ms-table-wrap"><table class="team-load-table ms-table">
+    <thead><tr><th>阶段</th><th>已完成/总计</th><th>进度</th><th>计划交付</th><th>操作</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>${pageBtns}`);
 }
 
+$('milestones')?.addEventListener('click', (e) => {
+  const pageBtn = e.target?.closest?.('[data-ms-page]');
+  if (!pageBtn || !last) return;
+  const next = Number(pageBtn.dataset.msPage);
+  if (!Number.isFinite(next)) return;
+  milestonePage = next;
+  renderMilestones(last.m);
+});
+$('milestoneSearch')?.addEventListener('input', () => {
+  milestonePage = 1;
+  if (last) renderMilestones(last.m);
+});
+
 function renderLoad(m) {
+  const loadEl = $('load');
+  if (!loadEl || !last?.data) return;
   const analysis = analyzeLoad(last.data);
-  const owners = Object.keys(analysis.load);
-  if (!owners.length) { $('load').innerHTML = '<span class="empty">没有未完成任务</span>'; return; }
+  const unfinished = last.data.tasks.filter((t) => t.status !== 'done');
+  if (!unfinished.length) {
+    loadEl.innerHTML = '<span class="empty">没有未完成任务</span>';
+    return;
+  }
+
+  const mergedOwners = new Map(getMergedOwners(last.data).map((o) => [o.id, o]));
+  const memberSet = new Set(Object.keys(analysis.load));
+  for (const t of unfinished) {
+    const claim = getTaskClaim(t.id);
+    if (claim?.state === 'active') memberSet.add(claim.actor);
+  }
+
+  const members = [...memberSet].map((id) => {
+    const profile = mergedOwners.get(id);
+    const kind = profile?.kind || inferActorKind(id);
+    const role = profile?.role || '';
+    const ownedTasks = unfinished.filter((t) => t.owner === id);
+    const claimedTasks = unfinished.filter((t) => {
+      const c = getTaskClaim(t.id);
+      return c?.state === 'active' && c.actor === id;
+    });
+    const taskMap = new Map([...ownedTasks, ...claimedTasks].map((t) => [t.id, t]));
+    const tasks = [...taskMap.values()];
+    const doingCount = tasks.filter((t) => t.status === 'doing').length;
+    const blockedCount = tasks.filter((t) => t.status === 'blocked').length;
+    const todoCount = tasks.filter((t) => t.status === 'todo').length;
+    const weekPeaks = analysis.weeks.map((w) => analysis.load[id]?.[w] || 0);
+    const maxPeak = Math.max(0, ...weekPeaks);
+    return {
+      id,
+      label: role ? `${id} (${role})` : id,
+      kind,
+      tasks,
+      doingCount,
+      blockedCount,
+      todoCount,
+      activeClaims: claimedTasks.length,
+      weekPeaks,
+      maxPeak,
+    };
+  }).sort((a, b) => b.maxPeak - a.maxPeak || b.blockedCount - a.blockedCount || b.doingCount - a.doingCount || a.id.localeCompare(b.id, 'zh-CN'));
+
+  if (!loadMemberInitialized && members.length) {
+    loadMemberInitialized = true;
+    expandedLoadMembers.clear();
+    expandedLoadMembers.add(members[0].id);
+  }
+
+  const conflictCount = members.filter((item) => item.maxPeak >= 3).length;
+  const totalBlocked = unfinished.filter((t) => t.status === 'blocked').length;
+  const totalDoing = unfinished.filter((t) => t.status === 'doing').length;
+  const activeAgentCount = new Set(
+    unfinished
+      .map((t) => getTaskClaim(t.id))
+      .filter((c) => c?.state === 'active' && c.actorKind === 'agent')
+      .map((c) => c.actor),
+  ).size;
+
+  const summaryHtml = `<div class="project-load-summary">
+    <span class="team-count-pill">成员 ${members.length}</span>
+    <span class="team-count-pill doing">进行中 ${totalDoing}</span>
+    ${totalBlocked ? `<span class="team-count-pill blocked">阻塞 ${totalBlocked}</span>` : ''}
+    ${activeAgentCount ? `<span class="team-count-pill ready">在岗 AI ${activeAgentCount}</span>` : ''}
+    ${conflictCount ? `<span class="team-count-pill blocked">并行冲突 ${conflictCount} 人</span>` : '<span class="team-count-pill done">无 ≥3 并发冲突</span>'}
+  </div>`;
+
+  if (loadViewMode === 'chart') {
+    loadEl.innerHTML = `${summaryHtml}${renderMemberLoadSvg(computeMemberWorkload(last.data.tasks), esc)}`;
+    return;
+  }
+
   const head = analysis.weeks.map((w) => `<th>${fromDay(w).slice(5)}</th>`).join('');
-  const rows = owners.map((o) => `<tr><th>${esc(o)}</th>${analysis.weeks.map((w) => {
-    const c = analysis.load[o][w] || 0;
-    return `<td class="${c >= 3 ? 'l3' : c === 2 ? 'l2' : c ? 'l1' : ''}">${c || ''}</td>`;
-  }).join('')}</tr>`).join('');
+  const rows = members.map((item) => {
+    const kindBadge = `<span class="roster-kind ${item.kind}">${item.kind === 'agent' ? 'AI' : '人类'}</span>`;
+    const isOpen = expandedLoadMembers.has(item.id);
+    const weekCells = item.weekPeaks.map((c) => {
+      const cls = c >= 3 ? 'collision' : c === 2 ? 'multi' : c ? 'normal' : 'idle';
+      return `<td><span class="team-heat-cell ${cls}">${c || '—'}</span></td>`;
+    }).join('');
+    const taskCards = isOpen
+      ? `<tr class="team-collision-row"><td colspan="${4 + analysis.weeks.length}">
+          <div class="project-load-cards">
+            ${item.tasks.map((t, idx) => {
+              const claim = getTaskClaim(t.id);
+              const claimTag = claim ? `<span class="claim-chip ${claim.state === 'stale' ? 'stale' : 'active'}">${esc(claim.actor)}</span>` : '';
+              return `<article class="kanban-card st-${esc(t.status)}">
+                <div class="kanban-card-head">
+                  <span class="kanban-card-id"><span class="kanban-card-seq">${idx + 1}</span>${esc(t.id)} · ${esc(t.milestone)}</span>
+                  <span>${t.progress}%</span>
+                </div>
+                <button type="button" class="action-task-title" data-follow-task="${esc(t.id)}">${esc(t.title)}</button>
+                <div class="kanban-card-meta"><span>${STATUS[t.status]}</span><span>${esc(t.start.slice(5))} ~ ${esc(t.end.slice(5))}</span>${claimTag}</div>
+              </article>`;
+            }).join('')}
+          </div>
+        </td></tr>`
+      : '';
+    return `<tr>
+      <td><div class="team-member-cell"><strong>${esc(item.label)}</strong>${kindBadge}</div></td>
+      <td>${item.doingCount} 进行 · ${item.blockedCount} 阻塞 · ${item.todoCount} 待办</td>
+      <td>${item.activeClaims ? `<span class="claim-chip active">${item.activeClaims} 项持锁</span>` : '<span class="empty">—</span>'}</td>
+      ${weekCells}
+      <td><button type="button" class="btn-sm" data-load-member="${esc(item.id)}" aria-expanded="${isOpen}">${isOpen ? '收起' : `明细 (${item.tasks.length})`}</button></td>
+    </tr>${taskCards}`;
+  }).join('');
+
   const suggestions = analysis.suggestions.map((s) => `<li>${esc(s.owner)}：${s.conflictDay} 出现冲突，可试将 ${esc(s.id)} 顺延至 ${s.start} ~ ${s.end}；需复核下游依赖和交付日期。</li>`).join('');
-  $('load').innerHTML = `<div class="loadw"><table class="load"><tr><th>周起</th>${head}</tr>${rows}</table></div><div class="empty" style="font-size:12px;margin-top:6px">每周展示每日并行任务峰值；≥3 标红。</div>${suggestions ? `<ul class="load-suggestions">${suggestions}</ul>` : '<div class="empty">暂无资源冲突建议</div>'}`;
+  loadEl.innerHTML = `${summaryHtml}<div class="team-table-wrap"><table class="team-load-table">
+    <thead><tr><th>成员</th><th>未完成分布</th><th>当前持锁</th>${head}<th>任务明细</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div><div class="empty" style="font-size:12px;margin-top:6px">每周展示每日并行任务峰值；≥3 标红。</div>${suggestions ? `<ul class="load-suggestions">${suggestions}</ul>` : '<div class="empty">暂无资源冲突建议</div>'}`;
 }
+
+$('load')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-load-member]');
+  if (!btn || !last) return;
+  const id = btn.dataset.loadMember;
+  if (expandedLoadMembers.has(id)) expandedLoadMembers.delete(id);
+  else expandedLoadMembers.add(id);
+  renderLoad(last.m);
+});
 
 const EVENT_TYPE_LABELS = {
   claim: '认领任务',

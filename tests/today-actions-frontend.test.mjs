@@ -675,7 +675,7 @@ test('M11 frontend: T-79 presets & per-project filter persistence + T-80 dblclic
     tasks: [
       { id: 'T-1', title: '逾期任务', owner: 'dev', milestone: 'M1', start: '2026-11-10', end: '2026-11-15', deps: [], status: 'todo', progress: 0, actualStart: null, actualEnd: null },
       { id: 'T-2', title: '阻塞任务', owner: 'dev', milestone: 'M1', start: '2026-11-20', end: '2026-11-28', deps: [], status: 'blocked', progress: 20, actualStart: '2026-11-20', actualEnd: null },
-      { id: 'T-3', title: '正常进行', owner: 'dev', milestone: 'M1', start: '2026-11-20', end: '2026-11-28', deps: [], status: 'doing', progress: 50, actualStart: '2026-11-20', actualEnd: null },
+      { id: 'T-3', title: '正常进行', owner: 'dev', milestone: 'M1', start: '2026-11-20', end: '2099-12-31', deps: [], status: 'doing', progress: 50, actualStart: '2026-11-20', actualEnd: null },
       { id: 'T-4', title: '已完成任务', owner: 'dev', milestone: 'M1', start: '2026-11-10', end: '2026-11-12', deps: [], status: 'done', progress: 100, actualStart: '2026-11-10', actualEnd: '2026-11-12' },
     ],
   };

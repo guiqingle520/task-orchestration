@@ -1,3 +1,5 @@
+import { renderCapacityHoursSvg } from './charts.js';
+
 const capacityFields = ['storyPoints', 'estimateHours', 'actualHours'];
 const providerBase = { github: 'https://api.github.com', gitlab: 'https://gitlab.com/api/v4' };
 export function installM5Panels({ getLive, apiUrl, refresh, downloadFile, rerenderDetail, esc }) {
@@ -40,6 +42,7 @@ export function installM5Panels({ getLive, apiUrl, refresh, downloadFile, rerend
       <div>实测准确率 <b>${pct(m.overallAccuracyPct)}</b></div>
       <div>实测膨胀系数 <b>${m.overallInflationRatio == null ? '—' : num(m.overallInflationRatio) + '×'}</b></div>
       </div><p class="empty">${m.sampledDoneCount ? '基于 ' + num(m.sampledDoneCount) + ' 项实测样本' : '暂无可计算的实测样本'}</p>
+      ${renderCapacityHoursSvg(m.byOwner, esc)}
       ${(m.byOwner || []).map((owner) => `<div class="m5-owner">
         <div><b>${esc(owner.owner)}</b> · ${pct(owner.accuracyPct)} · ${num(owner.sampledDoneCount)} 项样本</div>
         ${owner.accuracyPct == null ? '' : `<progress max="100" value="${Number(owner.accuracyPct)}" aria-label="预估准确率"></progress>`}

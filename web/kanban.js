@@ -11,21 +11,33 @@ const compareIdAsc = (a, b) => a.id.localeCompare(b.id, 'en', { numeric: true })
 const compareOpen = (a, b) => a.end.localeCompare(b.end) || compareIdAsc(a, b);
 const compareDone = (a, b) => (b.actualEnd || b.end).localeCompare(a.actualEnd || a.end) || compareIdAsc(b, a);
 
-export function groupKanbanTasks(tasks, { doneExpanded = false, doneLimit = DONE_COLLAPSE_LIMIT } = {}) {
+export function groupKanbanTasks(tasks, {
+  doneExpanded = false,
+  expandedCols = null,
+  doneLimit = DONE_COLLAPSE_LIMIT,
+  openLimit = 0,
+} = {}) {
   const buckets = { todo: [], doing: [], blocked: [], done: [] };
   for (const task of tasks || []) {
     if (buckets[task.status]) buckets[task.status].push(task);
   }
   return KANBAN_COLUMNS.map(({ status, label }) => {
     const sorted = [...buckets[status]].sort(status === 'done' ? compareDone : compareOpen);
-    const shouldCollapse = status === 'done' && !doneExpanded && sorted.length > doneLimit;
-    const visibleTasks = shouldCollapse ? sorted.slice(0, doneLimit) : sorted;
+    const limit = status === 'done' ? doneLimit : openLimit;
+    const isExpanded = (status === 'done' && doneExpanded) || Boolean(expandedCols?.has?.(status));
+    const shouldCollapse = limit > 0 && !isExpanded && sorted.length > limit;
+    const visibleTasks = shouldCollapse ? sorted.slice(0, limit) : sorted;
+    const hiddenTasks = shouldCollapse ? sorted.slice(limit) : [];
     return {
       status,
       label,
       total: sorted.length,
+      allTasks: sorted,
+      stacked: shouldCollapse,
       visibleTasks,
-      hiddenCount: sorted.length - visibleTasks.length,
+      hiddenTasks,
+      hiddenCount: hiddenTasks.length,
+      isExpanded,
     };
   });
 }

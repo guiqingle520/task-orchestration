@@ -178,12 +178,19 @@
         </section>
         <section class="card" id="burndownCard" data-views="overview">
           <div class="card-head">
-            <h2>燃尽趋势</h2>
-            <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
+            <h2>数据趋势</h2>
+            <div class="snapshot-controls">
+              <div class="seg" id="overviewChartTabs" role="group" aria-label="切换总览报表">
+                <button type="button" data-overview-chart="burndown" class="on" aria-pressed="true">燃尽趋势</button>
+                <button type="button" data-overview-chart="status" aria-pressed="false">状态分布</button>
+                <button type="button" data-overview-chart="throughput" aria-pressed="false">交付速率</button>
+              </div>
+              <select id="burndownScope" class="scope-select" aria-label="筛选燃尽图里程碑"><option value="all">全部里程碑</option></select>
+            </div>
           </div>
           <div id="burndownSummary" class="burndown-summary"></div>
           <div id="burndownChart" class="burndown-chart"></div>
-          <div class="legend chart-key"><span><i class="sw act"></i>实际</span><span><i class="sw ghost"></i>计划</span></div>
+          <div class="legend chart-key" id="burndownLegend"><span><i class="sw act"></i>实际</span><span><i class="sw ghost"></i>计划</span></div>
         </section>
         <section class="card" id="risk-panel" data-views="overview delivery">
           <div class="card-head">
@@ -196,7 +203,7 @@
           </div>
           <div id="webhookStatus" class="snapshot-result" role="status"></div>
         </section>
-        <section class="card" id="deliveries" data-views="overview delivery"><div class="card-head"><h2>里程碑进度</h2><span class="empty">所有阶段</span></div><div id="milestones"></div></section>
+        <section class="card" id="deliveries" data-views="overview delivery"><div class="card-head"><h2>里程碑进度</h2><div class="snapshot-controls"><div class="seg" id="milestoneViewTabs" role="group" aria-label="切换里程碑展示"><button type="button" data-ms-view="list" class="on" aria-pressed="true">列表</button><button type="button" data-ms-view="chart" aria-pressed="false">对比图</button></div><input type="search" id="milestoneSearch" class="ms-search" placeholder="搜索阶段编号或名称" autocomplete="off"></div></div><div id="milestones"></div></section>
         <section class="card today-actions" id="todayActionCard" data-views="overview" aria-labelledby="today-action-title">
           <div class="card-head">
             <h2 id="today-action-title">今日行动</h2>
@@ -216,7 +223,7 @@
           </div>
         </section>
         <section class="card" id="loadCard" data-views="capacity">
-          <div class="card-head"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><button type="button" class="btn-sm" id="manageOwnersBtn">管理团队与智能体</button></div>
+          <div class="card-head"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><div class="snapshot-controls"><div class="seg" id="loadViewTabs" role="group" aria-label="切换负载展示"><button type="button" data-load-view="table" class="on" aria-pressed="true">并行热力</button><button type="button" data-load-view="chart" aria-pressed="false">成员分布图</button></div><button type="button" class="btn-sm" id="manageOwnersBtn">管理团队与智能体</button></div></div>
           <div id="load"></div>
         </section>
         <section class="card" id="capacityCard" data-views="capacity">
@@ -548,6 +555,26 @@
       <button type="submit" id="submitClaimAction">确认</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="kanbanStackDialog" class="task-dialog kanban-stack-dialog" aria-labelledby="kanbanStackTitle">
+  <div class="kanban-stack-head">
+    <h2 id="kanbanStackTitle">任务列表</h2>
+    <input type="search" id="kanbanStackSearch" class="kanban-stack-search" placeholder="搜索编号、标题、负责人或阶段" autocomplete="off">
+    <button type="button" id="closeKanbanStack">关闭</button>
+  </div>
+  <div id="kanbanStackGrid" class="kanban-stack-grid"></div>
+  <div id="kanbanStackDetail" class="kanban-stack-detail" aria-live="polite"></div>
+</dialog>
+
+<dialog id="teamStackDialog" class="task-dialog kanban-stack-dialog" aria-labelledby="teamStackTitle">
+  <div class="kanban-stack-head">
+    <h2 id="teamStackTitle">成员任务列表</h2>
+    <input type="search" id="teamStackSearch" class="kanban-stack-search" placeholder="搜索项目、编号或标题" autocomplete="off">
+    <button type="button" id="closeTeamStack">关闭</button>
+  </div>
+  <div id="teamStackGrid" class="kanban-stack-grid"></div>
+  <div id="teamStackDetail" class="kanban-stack-detail" aria-live="polite"></div>
 </dialog>
 
 <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>

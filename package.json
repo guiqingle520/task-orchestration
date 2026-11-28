@@ -1,6 +1,6 @@
 {
   "name": "task-cockpit",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/guiqingle520/task-orchestration.git"

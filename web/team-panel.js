@@ -7,6 +7,14 @@ const LOAD_LABELS = {
   idle: '空闲',
 };
 
+const BUCKET_META = {
+  blocked: { label: '阻塞卡点', st: 'blocked' },
+  doing: { label: '进行中 / 持锁执行', st: 'doing' },
+  recentDone: { label: '近 2 天已完成', st: 'done' },
+  ready: { label: '待认领 / 可开工', st: 'todo' },
+};
+const STACK_THRESHOLD = 2;
+
 export function installTeamPanel({ esc, onTeamSaved } = {}) {
   const $ = (id) => document.getElementById(id);
   let view = null;
@@ -18,6 +26,7 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
   let expandedCollisionId = null;
   const expandedStandup = new Set();
   let standupInitialized = false;
+  let stackState = null;
   let standupMode = (() => {
     try { return localStorage.getItem('team.standupMode') === 'list' ? 'list' : 'matrix'; } catch { return 'matrix'; }
   })();
@@ -67,17 +76,91 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
     });
   }
 
-  function renderTaskLinks(items, tagFn) {
-    return `<ul class="team-task-list">${items.map((item) => {
-      const href = `?project=${encodeURIComponent(item.projectId)}&amp;task=${encodeURIComponent(item.id)}#timeline`;
-      const claimTag = item.claim
-        ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${item.claim.state === 'stale' ? '超时' : '持锁'} ${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` ${item.claim.remainingMinutes}m` : ''}</span>`
-        : '';
-      return `<li class="team-task-row">
-        <a class="team-task-link" href="${href}"><span class="portfolio-proj-badge">${esc(item.projectName)}</span><span class="team-task-title">${esc(item.id)} · ${esc(item.title)}</span></a>
-        <div class="team-task-meta">${tagFn(item)}${claimTag}<span class="team-task-due">${esc(item.end.slice(5))}</span></div>
-      </li>`;
-    }).join('')}</ul>`;
+  const statusTone = (bucket, item) => (BUCKET_META[bucket]?.st || item?.status || 'todo');
+  const itemKey = (item) => `${item.projectId}::${item.id}`;
+
+  function renderTeamCard(item, bucket, seq, { inModal = false } = {}) {
+    const st = statusTone(bucket, item);
+    const href = `?project=${encodeURIComponent(item.projectId)}&amp;task=${encodeURIComponent(item.id)}#timeline`;
+    const claimTag = item.claim
+      ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${item.claim.state === 'stale' ? '超时' : '持锁'} ${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` ${item.claim.remainingMinutes}m` : ''}</span>`
+      : '';
+    const stateChip = bucket === 'blocked'
+      ? `<span class="status-chip red">阻塞 ${item.progress}%</span>`
+      : bucket === 'doing'
+        ? (item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">${item.progress}%</span>`)
+        : bucket === 'recentDone'
+          ? `<span class="status-chip green">完成 ${esc((item.actualEnd || item.end).slice(5))}</span>`
+          : `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '可开工' : '可提前'}</span>`;
+    const key = itemKey(item);
+    const selectedCls = inModal && stackState?.selectedKey === key ? 'sel' : '';
+    const titleMarkup = inModal
+      ? `<div class="kanban-card-title">${esc(item.title)}</div>`
+      : `<a class="team-task-link" href="${href}"><span class="team-task-title">${esc(item.title)}</span></a>`;
+    return `<article class="kanban-card st-${esc(st)} ${selectedCls}" ${inModal ? `data-team-stack-card="${esc(key)}"` : ''}>
+      <div class="kanban-card-head">
+        <span class="kanban-card-id"><span class="kanban-card-seq">${seq}</span><span class="portfolio-proj-badge">${esc(item.projectName)}</span>${esc(item.id)}</span>
+        <span class="team-task-due">${esc(item.end.slice(5))}</span>
+      </div>
+      ${titleMarkup}
+      <div class="kanban-card-meta">${stateChip}${claimTag}</div>
+    </article>`;
+  }
+
+  function renderBucketContent(memberId, bucket, items) {
+    if (!items.length) return '';
+    if (items.length <= STACK_THRESHOLD) {
+      return `<div class="kanban-cards">${items.map((item, idx) => renderTeamCard(item, bucket, idx + 1)).join('')}</div>`;
+    }
+    const meta = BUCKET_META[bucket] || { label: '', st: 'todo' };
+    const top = items[0];
+    const previewIds = items.slice(0, 3).map((t) => t.id).join('、');
+    return `<div class="kanban-deck-wrap">
+      <button type="button" class="kanban-deck st-${esc(meta.st)}" data-team-deck="${esc(memberId)}" data-team-bucket="${esc(bucket)}">
+        <span class="kanban-deck-front">
+          <span class="kanban-deck-top">
+            <span class="kanban-deck-badge">共 ${items.length} 项</span>
+            <span class="kanban-deck-action">点击展开全部 ›</span>
+          </span>
+          <span class="kanban-deck-title">[${esc(top.projectName)}] ${esc(top.id)} · ${esc(top.title)}</span>
+          <span class="kanban-deck-sub">包含 ${esc(previewIds)}${items.length > 3 ? ' 等' : ''}</span>
+        </span>
+      </button>
+    </div>`;
+  }
+
+  function renderTeamStackModal() {
+    if (!view || !stackState || !$('teamStackGrid')) return;
+    const member = (view.members || []).find((m) => m.id === stackState.memberId);
+    const items = member?.standup?.[stackState.bucket] || [];
+    const meta = BUCKET_META[stackState.bucket] || { label: '' };
+    if ($('teamStackTitle')) $('teamStackTitle').textContent = `${member?.label || stackState.memberId} · ${meta.label}（共 ${items.length} 项）`;
+    const q = ($('teamStackSearch')?.value || '').trim().toLowerCase();
+    const seqMap = new Map(items.map((item, idx) => [itemKey(item), idx + 1]));
+    const matched = q
+      ? items.filter((item) => `${item.projectName} ${item.id} ${item.title} ${item.owner || ''}`.toLowerCase().includes(q))
+      : items;
+    $('teamStackGrid').innerHTML = matched.map((item) => renderTeamCard(item, stackState.bucket, seqMap.get(itemKey(item)), { inModal: true })).join('')
+      || '<p class="kanban-empty">没有匹配的任务。</p>';
+    const detailEl = $('teamStackDetail');
+    if (detailEl) {
+      const sel = items.find((item) => itemKey(item) === stackState.selectedKey);
+      if (sel) {
+        const href = `?project=${encodeURIComponent(sel.projectId)}&amp;task=${encodeURIComponent(sel.id)}#timeline`;
+        const claimInfo = sel.claim ? ` · 持锁人：${sel.claim.actor}` : '';
+        detailEl.innerHTML = `<b>[${esc(sel.projectName)}] ${esc(sel.id)} · ${esc(sel.title)}</b> · 负责人：${esc(sel.owner || '—')}${esc(claimInfo)} · 进度 ${sel.progress}% · 截止 ${esc(sel.end)} <a class="btn-sm" href="${href}">打开时间线定位 →</a>`;
+      } else {
+        detailEl.innerHTML = '';
+      }
+    }
+  }
+
+  function openTeamStackModal(memberId, bucket) {
+    if (!view) return;
+    stackState = { memberId, bucket, selectedKey: null };
+    if ($('teamStackSearch')) $('teamStackSearch').value = '';
+    renderTeamStackModal();
+    $('teamStackDialog')?.showModal?.();
   }
 
   function render() {
@@ -152,10 +235,10 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
       ].filter(Boolean).join('') || '<span class="empty">暂无待办</span>';
 
       const groups = [
-        m.standup.blocked.length ? `<div class="team-standup-group"><h4>阻塞卡点（${m.standup.blocked.length}）</h4>${renderTaskLinks(m.standup.blocked, (item) => `<span class="status-chip red">阻塞 ${item.progress}%</span>`)}</div>` : '',
-        m.standup.doing.length ? `<div class="team-standup-group"><h4>进行中 / 持锁执行（${m.standup.doing.length}）</h4>${renderTaskLinks(m.standup.doing, (item) => item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">${item.progress}%</span>`)}</div>` : '',
-        m.standup.recentDone.length ? `<div class="team-standup-group"><h4>近 2 天已完成（${m.standup.recentDone.length}）</h4>${renderTaskLinks(m.standup.recentDone, (item) => `<span class="status-chip green">完成 ${(item.actualEnd || item.end).slice(5)}</span>`)}</div>` : '',
-        m.standup.ready.length ? `<div class="team-standup-group"><h4>待认领 / 可开工（${m.standup.ready.length}）</h4>${renderTaskLinks(m.standup.ready, (item) => `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '现在可开工' : '可提前开始'}</span>`)}</div>` : '',
+        m.standup.blocked.length ? `<div class="team-standup-group"><h4>阻塞卡点（${m.standup.blocked.length}）</h4>${renderBucketContent(m.id, 'blocked', m.standup.blocked)}</div>` : '',
+        m.standup.doing.length ? `<div class="team-standup-group"><h4>进行中 / 持锁执行（${m.standup.doing.length}）</h4>${renderBucketContent(m.id, 'doing', m.standup.doing)}</div>` : '',
+        m.standup.recentDone.length ? `<div class="team-standup-group"><h4>近 2 天已完成（${m.standup.recentDone.length}）</h4>${renderBucketContent(m.id, 'recentDone', m.standup.recentDone)}</div>` : '',
+        m.standup.ready.length ? `<div class="team-standup-group"><h4>待认领 / 可开工（${m.standup.ready.length}）</h4>${renderBucketContent(m.id, 'ready', m.standup.ready)}</div>` : '',
       ].filter(Boolean);
 
       const bodyHtml = isOpen
@@ -176,18 +259,9 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
       </article>`;
     }).join('');
 
-    const renderMatrixCell = (items, emptyCls, tagFn) => {
+    const renderMatrixCell = (memberId, bucket, items) => {
       if (!items.length) return '<span class="team-matrix-empty">—</span>';
-      return `<ul class="team-matrix-items">${items.map((item) => {
-        const href = `?project=${encodeURIComponent(item.projectId)}&amp;task=${encodeURIComponent(item.id)}#timeline`;
-        const claimTag = item.claim
-          ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` ${item.claim.remainingMinutes}m` : ''}</span>`
-          : '';
-        return `<li class="team-matrix-item ${emptyCls || ''}">
-          <a href="${href}"><span class="portfolio-proj-badge">${esc(item.projectName)}</span> ${esc(item.id)} · ${esc(item.title)}</a>
-          <div class="team-matrix-tags">${tagFn(item)}${claimTag}</div>
-        </li>`;
-      }).join('')}</ul>`;
+      return renderBucketContent(memberId, bucket, items);
     };
 
     const standupMatrix = `<div class="team-table-wrap"><table class="team-matrix-table">
@@ -200,10 +274,10 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
             <strong>${esc(m.label)}</strong>
             <div class="team-card-badges">${kindBadge}${groupBadge}<span class="team-state-badge ${m.loadState}">${LOAD_LABELS[m.loadState]}</span></div>
           </td>
-          <td>${renderMatrixCell(m.standup.blocked, 'is-blocked', (item) => `<span class="status-chip red">阻塞 ${item.progress}%</span>`)}</td>
-          <td>${renderMatrixCell(m.standup.doing, '', (item) => item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">${item.progress}%</span>`)}</td>
-          <td>${renderMatrixCell(m.standup.recentDone, '', (item) => `<span class="status-chip green">${esc((item.actualEnd || item.end).slice(5))}</span>`)}</td>
-          <td>${renderMatrixCell(m.standup.ready, '', (item) => `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '可开工' : '可提前'}</span>`)}</td>
+          <td>${renderMatrixCell(m.id, 'blocked', m.standup.blocked)}</td>
+          <td>${renderMatrixCell(m.id, 'doing', m.standup.doing)}</td>
+          <td>${renderMatrixCell(m.id, 'recentDone', m.standup.recentDone)}</td>
+          <td>${renderMatrixCell(m.id, 'ready', m.standup.ready)}</td>
         </tr>`;
       }).join('')}</tbody>
     </table></div>`;
@@ -235,6 +309,7 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
       lastMarkup = nextHtml;
       $('teamBody').innerHTML = nextHtml;
     }
+    if (stackState && $('teamStackDialog')?.open) renderTeamStackModal();
   }
 
   async function refresh(today) {
@@ -366,7 +441,26 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
         try { localStorage.setItem('team.standupMode', nextMode); } catch { /* ignore */ }
         render();
       }
+      return;
     }
+    const deckBtn = e.target?.closest?.('[data-team-deck]');
+    if (deckBtn) {
+      openTeamStackModal(deckBtn.dataset.teamDeck, deckBtn.dataset.teamBucket);
+    }
+  });
+  $('closeTeamStack')?.addEventListener('click', () => {
+    stackState = null;
+    $('teamStackDialog')?.close?.();
+  });
+  $('teamStackDialog')?.addEventListener('close', () => {
+    if (!$('teamStackDialog').open) stackState = null;
+  });
+  $('teamStackSearch')?.addEventListener('input', () => renderTeamStackModal());
+  $('teamStackGrid')?.addEventListener('click', (e) => {
+    const card = e.target?.closest?.('[data-team-stack-card]');
+    if (!card || !stackState) return;
+    stackState.selectedKey = card.dataset.teamStackCard;
+    renderTeamStackModal();
   });
 
   $('configTeamBtn')?.addEventListener('click', () => { void openConfigDialog(); });

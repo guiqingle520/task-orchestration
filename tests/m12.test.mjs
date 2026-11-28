@@ -404,12 +404,20 @@ test('T-83 & T-84 frontend: Kanban view switch, drag-drop, lock conflict, Time M
   assert.equal(elements.get('gantt').hidden, true);
   assert.equal(elements.get('kanban').hidden, false);
   assert.equal(JSON.parse(storage.get('timeline.mode')), 'kanban');
-  assert.match(elements.get('kanban').innerHTML, /展开其余 1 项已完成/);
+  assert.match(elements.get('kanban').innerHTML, /kanban-deck/);
+  assert.match(elements.get('kanban').innerHTML, /共 7 项已完成/);
 
   await elements.get('kanban').dispatch('click', {
-    target: { closest: (sel) => (sel === '[data-kanban-done-toggle]' ? {} : null) },
+    target: { closest: (sel) => (sel === '[data-kanban-deck]' ? { dataset: { kanbanDeck: 'done' } } : null) },
   });
-  assert.match(elements.get('kanban').innerHTML, /收起较早已完成/);
+  assert.equal(elements.get('kanbanStackDialog').open, true);
+  assert.match(elements.get('kanbanStackGrid').innerHTML, /T-10/);
+  await elements.get('kanbanStackGrid').dispatch('click', {
+    target: { closest: (sel) => (sel === '[data-kanban-card]' ? { dataset: { kanbanCard: 'T-10' } } : null) },
+  });
+  assert.match(elements.get('kanbanStackDetail').innerHTML, /T-10/);
+  await elements.get('closeKanbanStack').dispatch('click');
+  assert.equal(elements.get('kanbanStackDialog').open, false);
 
   // 2. 拖拽 T-1 从 todo 到 doing，验证 POST /api/task 参数与状态更新
   await elements.get('kanban').dispatch('dragstart', {

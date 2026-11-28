@@ -273,7 +273,13 @@ test('T-86 & T-87 frontend: team-panel renders load heatmap, collision details, 
         collisions: [{ date: '2026-11-28', count: 3, projectCount: 2, overloaded: true, tasks: [{ projectId: 'p1', projectName: '项目A', id: 'T-1', title: '任务1', status: 'doing' }] }],
         standup: {
           doing: [{ projectId: 'p1', projectName: '项目A', id: 'T-1', title: '任务1', progress: 50, end: '2026-11-29', claim: null, claimedPending: false }],
-          blocked: [], recentDone: [], ready: [],
+          blocked: [],
+          recentDone: [
+            { projectId: 'p1', projectName: '项目A', id: 'T-21', title: '完成1', progress: 100, end: '2026-11-27', actualEnd: '2026-11-27', claim: null },
+            { projectId: 'p1', projectName: '项目A', id: 'T-22', title: '完成2', progress: 100, end: '2026-11-27', actualEnd: '2026-11-27', claim: null },
+            { projectId: 'p1', projectName: '项目A', id: 'T-23', title: '完成3', progress: 100, end: '2026-11-28', actualEnd: '2026-11-28', claim: null },
+          ],
+          ready: [],
         },
       },
       {
@@ -320,8 +326,23 @@ test('T-86 & T-87 frontend: team-panel renders load heatmap, collision details, 
     const body = () => elements.get('teamBody').innerHTML;
     assert.match(body(), /撞车预警/);
     assert.match(body(), /team-matrix-table/);
+    assert.match(body(), /kanban-deck/);
+    assert.match(body(), /共 3 项/);
     assert.match(body(), /林晓 \(前端\)/);
     assert.match(body(), /codex#1/);
+
+    // 点击站会叠放卡包打开弹窗并查看卡片详情
+    await elements.get('teamBody').dispatch('click', {
+      target: { closest: (sel) => (sel === '[data-team-deck]' ? { dataset: { teamDeck: '林晓', teamBucket: 'recentDone' } } : null) },
+    });
+    assert.equal(elements.get('teamStackDialog').open, true);
+    assert.match(elements.get('teamStackGrid').innerHTML, /kanban-card-seq">1<\/span>/);
+    await elements.get('teamStackGrid').dispatch('click', {
+      target: { closest: (sel) => (sel === '[data-team-stack-card]' ? { dataset: { teamStackCard: 'p1::T-21' } } : null) },
+    });
+    assert.match(elements.get('teamStackDetail').innerHTML, /T-21/);
+    await elements.get('closeTeamStack').dispatch('click');
+    assert.equal(elements.get('teamStackDialog').open, false);
 
     // 切换列表视图与矩阵视图
     await elements.get('teamBody').dispatch('click', {
