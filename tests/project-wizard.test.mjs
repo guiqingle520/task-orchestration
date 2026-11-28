@@ -70,3 +70,30 @@ test('preflight and confirmation reject a plan directory redirected outside the 
   assert.throws(() => service.add({ repoRoot, name, id, previewId }));
   assert.equal(existsSync(join(outside, 'plan.md')), false);
 });
+
+test('workspaces setDefault and remove preserve disk files and prevent deleting last project', async t => {
+  const { root, repoRoot, file, service } = await fixture(t);
+  const { previewId, name, id } = service.preflight({ repoRoot });
+  const planContent = '# 保留的磁盘计划';
+  await mkdir(join(repoRoot, 'plan'));
+  await writeFile(file, planContent);
+  // preflight after valid creation
+  await writeFile(file, service.preflight({ repoRoot }).state === 'valid' ? planContent : `---\nproject: 项目二\nmilestones:\n  - id: M1\n    name: M1\n    due: 2026-11-20\ntasks:\n  - id: T-1\n    title: T1\n    milestone: M1\n    owner: a\n    start: 2026-11-10\n    end: 2026-11-12\n    status: todo\n    progress: 0\n---\n`);
+  const checked = service.preflight({ repoRoot });
+  assert.equal(checked.state, 'valid');
+  service.add({ repoRoot, name: checked.name, id: checked.id, previewId: checked.previewId });
+
+  const afterDefault = service.setDefault(checked.id);
+  assert.equal(afterDefault.default, checked.id);
+
+  // Removing default project falls back to remaining project and preserves disk plan.md
+  const afterRemove = service.remove(checked.id);
+  assert.equal(afterRemove.projects.length, 1);
+  assert.equal(afterRemove.default, 'default');
+  assert.equal(existsSync(file), true);
+  assert.match(await readFile(file, 'utf8'), /项目二/);
+
+  // Cannot remove the last remaining project
+  assert.throws(() => service.remove('default'), /最后一个项目/);
+  assert.ok(root);
+});

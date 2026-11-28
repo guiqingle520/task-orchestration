@@ -11,6 +11,8 @@ import { computeFitTickDays, layoutMilestoneLabels } from './gantt-layout.js';
 import { buildTaskHandoff, readyTasks } from './task-handoff.js';
 import { installOwnerPanel, ownerLabel, UNASSIGNED } from './owner-panel.js';
 import { defaultClaimTtl, inferActorKind } from './claims.js';
+import { groupKanbanTasks, kanbanStatusTransition } from './kanban.js';
+import { diffExternalClaimUpdates, diffExternalTaskUpdates, installToastHost } from './toast.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -45,7 +47,21 @@ let defaultProjectId = 'default';
 let eventSource = null;
 let webhookChannelsDraft = [];
 let webhookProjects = [];
+let timelineMode = 'gantt';
+let kanbanDoneExpanded = false;
+let kanbanDragTaskId = null;
+let kanbanBusy = false;
+let lastNotifiedProjectId = null;
+let prevTaskSnapshot = null;
+let prevClaimsSnapshot = null;
+let recentExternalDoneIds = new Set();
+let suppressToastUntil = 0;
+const markLocalWrite = (ms = 2500) => { suppressToastUntil = Date.now() + ms; };
+const toastHost = installToastHost($('toastStack'), { esc, onLocate: (taskId) => revealTimelineItem(taskId) });
 const taskFilterFields = { query: 'taskQuery', status: 'filterStatus', owner: 'filterOwner', milestone: 'filterMilestone' };
+const FILTER_STORAGE_PREFIX = 'task-orchestration.filters.';
+const OPEN_STATUSES = ['todo', 'doing', 'blocked'];
+let loadedFiltersProjectId = null;
 let taskFilters = {};
 let todayActionOwners = [];
 
@@ -53,6 +69,56 @@ function normalizeSelection(value) {
   if (Array.isArray(value)) return [...new Set(value.filter(Boolean))];
   if (typeof value === 'string' && value) return [value];
   return [];
+}
+
+function readSavedFilters(projectId) {
+  if (!projectId) return {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(`${FILTER_STORAGE_PREFIX}${projectId}`) || 'null');
+    if (!raw || typeof raw !== 'object') return {};
+    return {
+      ...(typeof raw.query === 'string' && raw.query ? { query: raw.query } : {}),
+      ...(Array.isArray(raw.status) && raw.status.length ? { status: normalizeSelection(raw.status) } : {}),
+      ...(Array.isArray(raw.owner) && raw.owner.length ? { owner: normalizeSelection(raw.owner) } : {}),
+      ...(Array.isArray(raw.milestone) && raw.milestone.length ? { milestone: normalizeSelection(raw.milestone) } : {}),
+      ...(raw.riskOnly ? { riskOnly: true } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function saveProjectFilters(projectId = last?.projectId || currentProjectId) {
+  if (!projectId) return;
+  const clean = {
+    ...(normalizeQuery(taskFilters.query) ? { query: String(taskFilters.query) } : {}),
+    ...(normalizeSelection(taskFilters.status).length ? { status: normalizeSelection(taskFilters.status) } : {}),
+    ...(normalizeSelection(taskFilters.owner).length ? { owner: normalizeSelection(taskFilters.owner) } : {}),
+    ...(normalizeSelection(taskFilters.milestone).length ? { milestone: normalizeSelection(taskFilters.milestone) } : {}),
+    ...(taskFilters.riskOnly ? { riskOnly: true } : {}),
+  };
+  try {
+    if (Object.keys(clean).length) localStorage.setItem(`${FILTER_STORAGE_PREFIX}${projectId}`, JSON.stringify(clean));
+    else localStorage.removeItem(`${FILTER_STORAGE_PREFIX}${projectId}`);
+  } catch { /* 忽略 */ }
+}
+
+function activeFilterPreset() {
+  if (taskFilters.riskOnly) return 'risk';
+  const statuses = normalizeSelection(taskFilters.status);
+  if (statuses.length === 1 && statuses[0] === 'doing') return 'doing';
+  if (statuses.length === OPEN_STATUSES.length && OPEN_STATUSES.every((s) => statuses.includes(s))) return 'open';
+  if (!statuses.length) return 'all';
+  return '';
+}
+
+function syncFilterPresetButtons() {
+  const active = activeFilterPreset();
+  document.querySelectorAll('#taskFilterPresets [data-filter-preset]')?.forEach?.((btn) => {
+    const isOn = Boolean(active) && btn.dataset?.filterPreset === active;
+    btn.classList?.toggle?.('on', isOn);
+    btn.setAttribute?.('aria-pressed', String(isOn));
+  });
 }
 
 function readSelectValues(el) {
@@ -80,8 +146,6 @@ let claimsSequence = 0;
 let claimsFetchFailed = false;
 let handoffTaskId = null;
 let handoffPending = false;
-let rosterDraft = [];
-let rosterBusy = false;
 let claimActionState = null;
 let liveEventTab = 'activity';
 const PREFERRED_ACTOR_KEY = 'task-orchestration.preferredActor';
@@ -235,7 +299,8 @@ function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
   $('planTaskStart').value = editingTask.start;
   $('planTaskEnd').value = editingTask.end;
   $('planTaskDeps').value = (editingTask.deps || []).join(', ');
-  $('planChangeReason').value = prefillReason;
+  const defaultReason = isNew ? `新增任务 ${editingTask.id}` : (plannerMode ? `调整任务 ${editingTask.id} 排期与属性` : '');
+  $('planChangeReason').value = prefillReason || defaultReason;
   const activeClaim = !isNew ? getTaskClaim(editingTask.id) : null;
   if ($('planForceOverrideClaimsRow')) {
     $('planForceOverrideClaimsRow').hidden = !(plannerMode && !isNew && activeClaim?.state === 'active');
@@ -243,6 +308,7 @@ function openTaskModal(task, isNew = false, prefillReason = '', base = last) {
   if ($('planForceOverrideClaims')) $('planForceOverrideClaims').checked = false;
   $('taskStatus').value = editingTask.status;
   $('taskProgress').value = editingTask.progress;
+  syncProgressPresets();
   if ($('taskExecActor')) {
     $('taskExecActor').value = activeClaim?.state === 'active'
       ? activeClaim.actor
@@ -382,11 +448,36 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+function syncProgressPresets() {
+  const val = String(Number($('taskProgress')?.value ?? 0));
+  document.querySelectorAll('#taskProgressPresets [data-progress-preset]')?.forEach?.((btn) => {
+    const on = btn.dataset?.progressPreset === val;
+    btn.classList?.toggle?.('on', on);
+    btn.setAttribute?.('aria-pressed', String(on));
+  });
+}
+
 $('closeTask').addEventListener('click', () => $('taskDialog').close?.());
 $('taskDialog').addEventListener('close', () => { if (!$('taskDialog').open) taskEditBase = null; });
 $('taskStatus').addEventListener('change', () => {
   if ($('taskStatus').value === 'done') $('taskProgress').value = 100;
   if ($('taskStatus').value === 'todo') $('taskProgress').value = 0;
+  syncProgressPresets();
+});
+$('taskProgress')?.addEventListener('input', syncProgressPresets);
+$('taskProgressPresets')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-progress-preset]');
+  if (!btn) return;
+  const val = Number(btn.dataset?.progressPreset);
+  if (!Number.isFinite(val)) return;
+  $('taskProgress').value = val;
+  if (val === 100) $('taskStatus').value = 'done';
+  else if (val === 0) {
+    if ($('taskStatus').value !== 'blocked') $('taskStatus').value = 'todo';
+  } else if ($('taskStatus').value !== 'blocked') {
+    $('taskStatus').value = 'doing';
+  }
+  syncProgressPresets();
 });
 $('validatePlan').addEventListener('click', async () => {
   const base = taskEditBase;
@@ -399,6 +490,7 @@ $('validatePlan').addEventListener('click', async () => {
 });
 
 async function saveFullPlan(base, nextData, reason, statusEl, isCurrent, forceOverrideClaims = false) {
+  markLocalWrite();
   const response = await fetch(apiUrl('/api/plan/save', base.projectId), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -563,6 +655,7 @@ $('taskForm').addEventListener('submit', async (event) => {
     ...(activeClaim?.state === 'active' && activeClaim.actor === execActor ? { leaseId: activeClaim.leaseId } : {}),
   };
   try {
+    markLocalWrite();
     const response = await fetch(apiUrl('/api/task', base.projectId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     const result = await response.json();
     if (!isCurrent()) return;
@@ -667,6 +760,9 @@ function syncProjectOptions(registry) {
   if (select.innerHTML !== options) select.innerHTML = options;
   select.value = selectedProjectId();
   syncSearchPicker(select);
+  const current = selectedProjectId();
+  if ($('setDefaultProjectBtn')) $('setDefaultProjectBtn').disabled = !registry.projects.length || current === defaultProjectId;
+  if ($('removeProjectBtn')) $('removeProjectBtn').disabled = registry.projects.length <= 1;
 }
 
 async function refreshProjects() {
@@ -683,14 +779,17 @@ function bindEventsStream() {
   if (typeof EventSource === 'undefined') return;
   try { eventSource?.close?.(); } catch { /* 忽略 */ }
   eventSource = new EventSource(apiUrl('/api/events'));
-  eventSource.addEventListener('plan-change', refresh);
+  eventSource.addEventListener('plan-change', (ev) => {
+    if (ev?.data === 'connected') return;
+    void refresh({ fromSse: true });
+  });
 }
 
 function setPlanAvailable(available) {
   const isWritable = available && !isTimeMachine;
   for (const id of ['plannerMode', 'timelineFocusPlanner', 'syncGit', 'simEnabled', 'simTask', 'simDays', 'simApply', 'simReset',
     'exportMarkdown', 'exportSvg', 'copySummary', 'pushReportBtn', 'saveSnapshot', 'snapshots', 'compareSnapshot', 'pushRisksBtn',
-    'manageOwnersBtn', 'manageRosterBtn', 'refreshClaimsBtn']) {
+    'manageOwnersBtn', 'refreshClaimsBtn']) {
     if ($(id)) $(id).disabled = !isWritable;
   }
   if ($('burndownScope')) $('burndownScope').disabled = !available;
@@ -707,6 +806,13 @@ function clearPlan() {
   claimsSnapshot = null;
   claimsFetchFailed = false;
   claimsSequence++;
+  lastNotifiedProjectId = null;
+  prevTaskSnapshot = null;
+  prevClaimsSnapshot = null;
+  recentExternalDoneIds = new Set();
+  toastHost.clear();
+  kanbanDoneExpanded = false;
+  showKanbanNotice('');
   last = null;
   resetPlanGesture();
   planConfirmation = null;
@@ -717,7 +823,7 @@ function clearPlan() {
     $('claimsLiveEvents').hidden = true;
     $('claimsLiveEvents').open = false;
   }
-  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog', 'rosterDialog', 'claimActionDialog']) if ($(id)?.open) $(id).close();
+  for (const id of ['taskDialog', 'milestoneDialog', 'planEditDialog', 'handoffDialog', 'claimActionDialog']) if ($(id)?.open) $(id).close();
   for (const id of ['kpis', 'gctrl', 'timelineActions', 'timelineOptions', 'timelineRange', 'gantt', 'detail', 'milestones', 'risks', 'load', 'burndownSummary',
     'burndownChart', 'snapshots', 'simTask', 'simResult', 'snapshotResult', 'reportMessage', 'webhookStatus', 'planGestureMessage', 'followUpTasks', 'todayFollowList', 'todayReadyList',
     'claimsLiveBody', 'claimsLiveEventList', 'ownerRosterList', 'planOwnerList']) {
@@ -919,7 +1025,8 @@ async function switchProject(projectId) {
   }
   currentProjectId = projectId;
   workspaceEpoch++;
-  setTaskFilters();
+  loadedFiltersProjectId = null;
+  setTaskFilters(readSavedFilters(projectId), { persist: false });
   clearPlan();
   delays = {};
   $('simDays').value = 0;
@@ -931,6 +1038,50 @@ async function switchProject(projectId) {
 }
 
 $('projectSelect').addEventListener('change', () => switchProject($('projectSelect').value));
+
+async function handleSetDefaultProject(projectId = selectedProjectId()) {
+  if (!projectId) return;
+  const res = await fetch('/api/projects/default', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: projectId }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.message || body.error || '设置默认项目失败');
+  syncProjectOptions(body);
+  void portfolio.refresh?.();
+}
+
+async function handleRemoveProject(projectId = selectedProjectId(), name = '') {
+  if (!projectId) return;
+  const label = name || projectId;
+  const ok = typeof globalThis.confirm === 'function'
+    ? globalThis.confirm(`确认从工作区移除项目「${label}」吗？\n\n仅取消驾驶舱注册，不会删除磁盘上的任何项目文件。`)
+    : true;
+  if (!ok) return;
+  const res = await fetch('/api/projects/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: projectId }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.message || body.error || '移除项目失败');
+  syncProjectOptions(body);
+  void portfolio.refresh?.();
+  if (currentProjectId === projectId || selectedProjectId() !== currentProjectId) {
+    await switchProject(body.default || body.projects[0]?.id || 'default');
+  }
+}
+
+$('setDefaultProjectBtn')?.addEventListener('click', () => {
+  handleSetDefaultProject(selectedProjectId()).catch((err) => showErrors([err.message || '设置默认项目失败']));
+});
+$('removeProjectBtn')?.addEventListener('click', () => {
+  const select = $('projectSelect');
+  const opt = [...(select?.options || [])].find((o) => o.value === selectedProjectId());
+  const label = opt?.dataset?.searchLabel || opt?.textContent || selectedProjectId();
+  handleRemoveProject(selectedProjectId(), label).catch((err) => showErrors([err.message || '移除项目失败']));
+});
 
 bindProjectWizard($, async (project) => {
   const select = $('projectSelect');
@@ -1072,6 +1223,7 @@ $('syncGit')?.addEventListener('click', async () => {
   if (!last || isTimeMachine) return;
   const { epoch, projectId } = last;
   try {
+    markLocalWrite();
     const r = await (await fetch(apiUrl('/api/sync-git', projectId), { method: 'POST' })).json();
     if (!last || epoch !== workspaceEpoch) return;
     $('updated').textContent = r.ok
@@ -1160,7 +1312,7 @@ document.addEventListener('click', (e) => {
       $('msIdInput').value = `M${nextIdx}`;
       $('msNameInput').value = '';
       $('msDueInput').value = last.m.today;
-      $('msReasonInput').value = '';
+      $('msReasonInput').value = `新增里程碑 M${nextIdx}`;
       $('milestoneMessage').textContent = '';
       $('milestoneDialog').showModal?.();
       return;
@@ -1184,13 +1336,19 @@ document.addEventListener('click', (e) => {
     saveCollapsed();
     return renderAll(false);
   }
+  // 第一次点击会重绘并替换行元素，浏览器可能不再派发 dblclick，因此在第二次点击时直接打开编辑弹窗。
+  if (e.detail >= 2 && last && !isTimeMachine) {
+    const row = e.target.closest('.lrow[data-id], .band[data-id], .kanban-card[data-id]');
+    const task = row && last.data.tasks.find((item) => item.id === row.dataset?.id);
+    if (task) { openTaskModal(task); return; }
+  }
   const el = e.target.closest('[data-id]');
   if (!el) return;
   const fromSideList = Boolean(e.target.closest('#risks, #milestones, #capacityMetrics'));
   selected = selected === el.dataset.id ? null : el.dataset.id;
   // 选中的任务所在里程碑被折叠时自动展开
   const t = last?.data.tasks.find((x) => x.id === selected);
-  if (t && !filterTasks([t], taskFilters).length) setTaskFilters();
+  if (t && !filterTasks([t], { ...taskFilters, today: last?.m?.today }).length) setTaskFilters();
   if (t && collapsed.has(t.milestone)) { collapsed.delete(t.milestone); saveCollapsed(); }
   if (fromSideList && selected) ensureTimelineView();
   const focusList = e.target.closest('#milestones, #risks');
@@ -1198,6 +1356,14 @@ document.addEventListener('click', (e) => {
   if (!fromSideList) {
     [...(focusList?.querySelectorAll('button[data-id]') || [])].find((button) => button.dataset.id === el.dataset.id)?.focus({ preventScroll: true });
   }
+});
+
+document.addEventListener('dblclick', (e) => {
+  if (!last || isTimeMachine) return;
+  const row = e.target?.closest?.('.lrow[data-id], .band[data-id]') || e.target?.closest?.('.kanban-card[data-id]');
+  if (!row) return;
+  const task = last.data.tasks.find((item) => item.id === row.dataset?.id);
+  if (task) openTaskModal(task);
 });
 
 const VIEW_META = {
@@ -1275,7 +1441,8 @@ function updateWorkspaceNav() {
   return wasPortfolio !== portfolioActive;
 }
 
-async function refresh() {
+async function refresh(opts) {
+  const fromSse = Boolean(opts?.fromSse);
   const sequence = ++refreshSequence;
   if (portfolioActive) return portfolio.refresh($('today').value || todayLocal());
   const projectId = selectedProjectId();
@@ -1306,10 +1473,24 @@ async function refresh() {
     liveBackup = refreshed;
     return;
   }
+  const prevTasksForToast = (fromSse && lastNotifiedProjectId === refreshed.projectId) ? prevTaskSnapshot : null;
   last = refreshed;
+  if (loadedFiltersProjectId !== last.projectId) {
+    loadedFiltersProjectId = last.projectId;
+    setTaskFilters(readSavedFilters(last.projectId), { persist: false });
+  }
   setPlanAvailable(true);
   m5Panels.syncLive(last);
-  void refreshClaims();
+  if (fromSse && !portfolioActive && prevTasksForToast && Date.now() > suppressToastUntil) {
+    const taskUpdates = diffExternalTaskUpdates(prevTasksForToast, last.data.tasks);
+    if (taskUpdates.length) {
+      recentExternalDoneIds = new Set(taskUpdates.filter((u) => u.status === 'done').map((u) => u.taskId));
+      for (const notice of taskUpdates) toastHost.push(notice);
+    }
+  }
+  lastNotifiedProjectId = last.projectId;
+  prevTaskSnapshot = last.data.tasks;
+  void refreshClaims({ fromSse });
   $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
   const linked = pendingTaskLink;
   pendingTaskLink = null;
@@ -1359,14 +1540,17 @@ function renderAll(scroll) {
   if (scroll && selected) document.querySelector('.lrow.sel, .lgroup.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
-function setTaskFilters(filters = {}) {
-  taskFilters = filters;
+function setTaskFilters(filters = {}, { persist = true } = {}) {
+  taskFilters = filters && typeof filters === 'object' ? { ...filters } : {};
   for (const [key, id] of Object.entries(taskFilterFields)) {
     const el = $(id);
-    if (key === 'query') el.value = filters[key] ?? '';
-    else writeSelectValues(el, filters[key]);
+    if (!el) continue;
+    if (key === 'query') el.value = taskFilters[key] ?? '';
+    else writeSelectValues(el, taskFilters[key]);
     syncSearchPicker(el);
   }
+  syncFilterPresetButtons();
+  if (persist) saveProjectFilters();
 }
 
 function getMergedOwners(data) {
@@ -1468,7 +1652,7 @@ function applyTaskFilters() {
   if (!last || planGesture) return;
   const { data, m } = last;
   const task = data.tasks.find(item => item.id === selected);
-  if (task && !filterTasks([task], taskFilters).length) {
+  if (task && !filterTasks([task], { ...taskFilters, today: m.today }).length) {
     selected = null;
     renderDetail(data, m);
   }
@@ -1480,11 +1664,31 @@ for (const [key, id] of Object.entries(taskFilterFields)) {
   $(id).addEventListener(key === 'query' ? 'input' : 'change', (event) => {
     if (event.isComposing) return;
     taskFilters[key] = key === 'query' ? $(id).value : readSelectValues($(id));
+    if (key === 'status') delete taskFilters.riskOnly;
+    syncFilterPresetButtons();
+    saveProjectFilters();
     applyTaskFilters();
   });
 }
+$('taskFilterPresets')?.addEventListener('click', (event) => {
+  const btn = event.target?.closest?.('[data-filter-preset]');
+  if (!btn) return;
+  const preset = btn.dataset?.filterPreset;
+  const next = { ...taskFilters };
+  delete next.riskOnly;
+  if (preset === 'all') next.status = [];
+  else if (preset === 'open') next.status = [...OPEN_STATUSES];
+  else if (preset === 'doing') next.status = ['doing'];
+  else if (preset === 'risk') {
+    next.status = [];
+    next.riskOnly = true;
+  }
+  setTaskFilters(next);
+  applyTaskFilters();
+});
 $('taskQuery').addEventListener('compositionend', () => {
   taskFilters.query = $('taskQuery').value;
+  saveProjectFilters();
   applyTaskFilters();
 });
 $('clearTaskFilters').addEventListener('click', () => {
@@ -1497,12 +1701,13 @@ function revealTimelineItem(id) {
   if (!last) return;
   ensureTimelineView();
   const task = last.data.tasks.find(task => task.id === id);
+  if (task && !filterTasks([task], { ...taskFilters, today: last.m?.today }).length) setTaskFilters();
   const milestone = task?.milestone ?? id;
   collapsed.delete(milestone);
   saveCollapsed();
   selected = id;
   renderAll(false);
-  const row = document.querySelector('.lrow.sel, .lgroup.sel');
+  const row = document.querySelector('.lrow.sel, .lgroup.sel, .kanban-card.sel');
   row?.focus?.({ preventScroll: true });
   row?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
 }
@@ -1530,8 +1735,9 @@ async function copyTaskLink() {
   }
 }
 
-async function refreshClaims() {
+async function refreshClaims(opts) {
   if (!last || isTimeMachine || portfolioActive) return;
+  const fromSse = Boolean(opts?.fromSse);
   const { projectId, epoch } = last;
   const seq = ++claimsSequence;
   try {
@@ -1539,8 +1745,19 @@ async function refreshClaims() {
     const data = await response.json();
     if (!last || seq !== claimsSequence || epoch !== workspaceEpoch || last.projectId !== projectId) return;
     if (!response.ok || !data || typeof data.claims !== 'object') throw new Error(data?.message || '无法读取认领状态');
+    const prevClaimsForToast = (fromSse && lastNotifiedProjectId === projectId) ? prevClaimsSnapshot : null;
     claimsSnapshot = data;
+    prevClaimsSnapshot = data.claims;
     claimsFetchFailed = false;
+    if (fromSse && prevClaimsForToast && Date.now() > suppressToastUntil) {
+      const titleById = Object.fromEntries(last.data.tasks.map((task) => [task.id, task.title]));
+      const updates = diffExternalClaimUpdates(prevClaimsForToast, data.claims, titleById)
+        .filter((u) => !(u.title.includes('释放了') && recentExternalDoneIds.has(u.taskId)));
+      recentExternalDoneIds.clear();
+      for (const notice of updates) toastHost.push(notice);
+    } else if (fromSse) {
+      recentExternalDoneIds.clear();
+    }
     updateOwnerDatalist(last.data);
     updateTaskFilters(last.data);
     renderTodayActions(last.data, last.m);
@@ -1560,6 +1777,7 @@ async function refreshClaims() {
 
 async function callClaimsApi(payload) {
   if (!last || isTimeMachine) throw new Error('历史回放模式下不支持修改认领状态');
+  markLocalWrite();
   const { projectId, epoch } = last;
   const response = await fetch(apiUrl('/api/claims', projectId), {
     method: 'POST',
@@ -1680,8 +1898,12 @@ function renderTodayActions(data, m) {
   }
   const byOwner = ({ task }) => !todayActionOwners.length || todayActionOwners.includes(task.owner);
   const doingItems = data.tasks
-    .filter((task) => task.status === 'doing' && (!todayActionOwners.length || todayActionOwners.includes(task.owner)))
-    .sort((a, b) => a.end.localeCompare(b.end) || a.id.localeCompare(b.id, 'en', { numeric: true }));
+    .filter((task) => {
+      if (todayActionOwners.length && !todayActionOwners.includes(task.owner)) return false;
+      if (task.status === 'doing') return true;
+      return task.status === 'todo' && getTaskClaim(task.id)?.state === 'active';
+    })
+    .sort((a, b) => (a.status === 'doing' ? 0 : 1) - (b.status === 'doing' ? 0 : 1) || a.end.localeCompare(b.end) || a.id.localeCompare(b.id, 'en', { numeric: true }));
   const followItems = followUpTasks(data.tasks, m.today).filter(byOwner);
   const readyItems = readyTasks(data.tasks, m.today).filter(byOwner);
   const actionButtons = (task) => {
@@ -1702,9 +1924,12 @@ function renderTodayActions(data, m) {
       const deadline = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `距截止 ${days} 天`;
       const claim = getTaskClaim(task.id);
       const ownerLine = formatOwnerAndActor(task, claim);
+      const chip = task.status === 'doing'
+        ? '<span class="status-chip doing"><i class="status-dot" aria-hidden="true"></i>进行中</span>'
+        : '<span class="status-chip claimed-pending"><i class="status-dot" aria-hidden="true"></i>已认领·待更新进度</span>';
       return `<li class="action-item action-item-doing">
         <div class="action-item-main">
-          <span class="status-chip doing"><i class="status-dot" aria-hidden="true"></i>进行中</span>
+          ${chip}
           <div class="action-item-info">
             <button type="button" class="action-task-title" data-follow-task="${esc(task.id)}">${esc(task.id)} · ${esc(task.title)}</button>
             <span class="action-item-reason">${esc(ownerLine)} · ${esc(deadline)} · 进度 ${task.progress}% ${renderClaimChip(task)}</span>
@@ -1755,7 +1980,7 @@ function renderTodayActions(data, m) {
 }
 
 function renderFollowUp(data, m) {
-  const items = followUpTasks(filterTasks(data.tasks, taskFilters), m.today);
+  const items = followUpTasks(filterTasks(data.tasks, { ...taskFilters, today: m.today }), m.today);
   renderMarkup($('followUpTasks'), items.map(({ task, priority, days }) => {
     const date = days < 0 ? `逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天后到期`;
     const deadline = priority === 0 && days > 7 ? `计划截止 ${task.end}` : date;
@@ -1874,15 +2099,31 @@ const store = {
 };
 let scale = store.get('gantt.scale', 'fit');
 if (!SCALES[scale]) scale = 'fit';
+timelineMode = store.get('timeline.mode', 'gantt');
+if (timelineMode !== 'gantt' && timelineMode !== 'kanban') timelineMode = 'gantt';
 let collapsed = new Set(store.get('gantt.collapsed', []));
 let scrollToTodayNext = false;
 const saveCollapsed = () => store.set('gantt.collapsed', [...collapsed]);
+
+function showKanbanNotice(message = '', isError = false) {
+  const el = $('kanbanNotice');
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = !message;
+  el.classList?.toggle?.('error', Boolean(message && isError));
+}
 
 function renderCtrl() {
   const plannerBtns = (plannerMode && !isTimeMachine)
     ? `<button type="button" data-act="new-task">+ 新建任务</button><button type="button" data-act="new-milestone">+ 新建里程碑</button>
       <span class="planner-legend">拖两端改期，拖右侧锚点到下游任务，点击连线解除依赖。规划允许同日交接；模拟按次日开工。</span>`
     : '';
+  $('timeline')?.classList?.toggle?.('kanban-active', timelineMode === 'kanban');
+  document.querySelectorAll('#timelineModeSwitch [data-timeline-mode]')?.forEach?.((btn) => {
+    const on = btn.dataset?.timelineMode === timelineMode;
+    btn.classList?.toggle?.('on', on);
+    btn.setAttribute?.('aria-pressed', String(on));
+  });
   $('gctrl').innerHTML =
     `<div class="seg" role="group" aria-label="时间线缩放">${Object.entries(SCALES).map(([k, v]) => `<button data-scale="${k}" class="${scale === k ? 'on' : ''}" aria-pressed="${scale === k}">${v}</button>`).join('')}</div>`;
   $('timelineActions').innerHTML =
@@ -1893,6 +2134,156 @@ function renderCtrl() {
     plannerBtns;
 }
 
+function renderKanban(data, m, visibleTasks) {
+  const kanbanEl = $('kanban');
+  $('gantt').hidden = true;
+  if (!kanbanEl) return;
+  kanbanEl.hidden = false;
+  $('timelineRange').textContent = isTimeMachine ? '看板视图 · 历史回放（只读）' : '看板视图 · 拖拽卡片跨列更新状态';
+  const columns = groupKanbanTasks(visibleTasks, { doneExpanded: kanbanDoneExpanded });
+  renderMarkup(kanbanEl, columns.map((col) => {
+    const cardsHtml = col.visibleTasks.map((t) => {
+      const claim = getTaskClaim(t.id);
+      const ownerLine = formatOwnerAndActor(t, claim);
+      const days = toDay(t.end) - toDay(m.today);
+      const dueText = t.status === 'done'
+        ? `完成于 ${t.actualEnd || t.end}`
+        : days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `截止 ${t.end}`;
+      const editBtn = isTimeMachine ? '' : `<button type="button" class="btn-sm" data-quick-edit="${esc(t.id)}">改状态</button>`;
+      return `<article class="kanban-card st-${esc(t.status)} ${selected === t.id ? 'sel' : ''}" tabindex="-1" data-id="${esc(t.id)}" data-kanban-card="${esc(t.id)}" draggable="${isTimeMachine ? 'false' : 'true'}">
+        <div class="kanban-card-head">
+          <span class="kanban-card-id">${esc(t.id)} · ${esc(t.milestone)}</span>
+          <span>${t.progress}%</span>
+        </div>
+        <div class="kanban-card-title">${esc(t.title)}</div>
+        <div class="kanban-card-meta"><span>${esc(ownerLine)}</span><span>${esc(dueText)}</span>${renderClaimChip(t)}</div>
+        <div class="kanban-card-foot">
+          <span class="kanban-card-progress" aria-hidden="true"><i style="width:${t.progress}%"></i></span>
+          ${editBtn}
+        </div>
+      </article>`;
+    }).join('') || '<p class="kanban-empty">暂无任务</p>';
+    const collapseBtn = (col.status === 'done' && (col.hiddenCount > 0 || (kanbanDoneExpanded && col.total > 6)))
+      ? `<button type="button" class="btn-sm kanban-done-toggle" data-kanban-done-toggle>${kanbanDoneExpanded ? '收起较早已完成' : `展开其余 ${col.hiddenCount} 项已完成`}</button>`
+      : '';
+    return `<section class="kanban-col" data-kanban-col="${esc(col.status)}" aria-label="${esc(col.label)}列">
+      <header class="kanban-col-head"><span>${esc(col.label)}</span><span class="kanban-col-count">${col.total}</span></header>
+      <div class="kanban-cards">${cardsHtml}</div>
+      ${collapseBtn}
+    </section>`;
+  }).join(''));
+}
+
+async function moveKanbanTask(taskId, targetStatus) {
+  if (isTimeMachine || !last || kanbanBusy || !taskId || !targetStatus) return;
+  const base = last;
+  const task = base.data.tasks.find((item) => item.id === taskId);
+  const next = kanbanStatusTransition(task, targetStatus);
+  if (!task || !next) return;
+  const expected = Object.fromEntries(['status', 'progress', 'actualStart', 'actualEnd'].map((k) => [k, task[k]]));
+  const execActor = getPreferredActor();
+  const activeClaim = getTaskClaim(task.id);
+  const matchingLease = activeClaim?.state === 'active' && execActor && activeClaim.actor === execActor ? activeClaim.leaseId : '';
+  const payload = {
+    id: task.id,
+    expected,
+    status: next.status,
+    progress: next.progress,
+    ...(execActor ? { actor: execActor } : {}),
+    ...(matchingLease ? { leaseId: matchingLease } : {}),
+  };
+  kanbanBusy = true;
+  showKanbanNotice(`正在将 ${task.id} 移至「${STATUS[next.status]}」…`);
+  markLocalWrite();
+  try {
+    const response = await fetch(apiUrl('/api/task', base.projectId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!last || last.epoch !== base.epoch || last.projectId !== base.projectId) return;
+    if (!response.ok) {
+      const holder = result.claim?.actor ? `（当前持锁人：${result.claim.actor}）` : '';
+      showKanbanNotice((result.message || '状态更新失败') + holder, true);
+      if (response.status === 409) void refresh();
+      return;
+    }
+    showKanbanNotice(`${task.id} 已移至「${STATUS[next.status]}」`);
+    await refresh();
+  } catch {
+    showKanbanNotice('保存失败，无法连接服务', true);
+  } finally {
+    kanbanBusy = false;
+  }
+}
+
+$('timelineModeSwitch')?.addEventListener('click', (e) => {
+  const btn = e.target?.closest?.('[data-timeline-mode]');
+  if (!btn) return;
+  const mode = btn.dataset?.timelineMode;
+  if (mode !== 'gantt' && mode !== 'kanban') return;
+  timelineMode = mode;
+  store.set('timeline.mode', mode);
+  showKanbanNotice('');
+  if (last) renderGantt(last.data, last.m);
+  else renderCtrl();
+});
+
+$('kanban')?.addEventListener('click', (e) => {
+  const toggle = e.target?.closest?.('[data-kanban-done-toggle]');
+  if (!toggle || !last) return;
+  kanbanDoneExpanded = !kanbanDoneExpanded;
+  renderGantt(last.data, last.m);
+});
+
+$('kanban')?.addEventListener('dragstart', (e) => {
+  if (isTimeMachine || !last) {
+    e.preventDefault?.();
+    return;
+  }
+  const card = e.target?.closest?.('[data-kanban-card]');
+  if (!card) return;
+  kanbanDragTaskId = card.dataset?.kanbanCard || null;
+  if (kanbanDragTaskId) {
+    e.dataTransfer?.setData?.('text/plain', kanbanDragTaskId);
+    card.classList?.add?.('dragging');
+  }
+});
+
+$('kanban')?.addEventListener('dragend', () => {
+  kanbanDragTaskId = null;
+  document.querySelectorAll('.kanban-card.dragging, .kanban-col.drag-over')?.forEach?.((el) => {
+    el.classList?.remove?.('dragging', 'drag-over');
+  });
+});
+
+$('kanban')?.addEventListener('dragover', (e) => {
+  if (isTimeMachine || !kanbanDragTaskId) return;
+  const col = e.target?.closest?.('[data-kanban-col]');
+  if (!col) return;
+  e.preventDefault?.();
+  col.classList?.add?.('drag-over');
+});
+
+$('kanban')?.addEventListener('dragleave', (e) => {
+  const col = e.target?.closest?.('[data-kanban-col]');
+  if (!col) return;
+  if (!e.relatedTarget || !col.contains?.(e.relatedTarget)) col.classList?.remove?.('drag-over');
+});
+
+$('kanban')?.addEventListener('drop', (e) => {
+  const col = e.target?.closest?.('[data-kanban-col]');
+  if (!col) return;
+  e.preventDefault?.();
+  col.classList?.remove?.('drag-over');
+  if (isTimeMachine) return;
+  const taskId = kanbanDragTaskId || e.dataTransfer?.getData?.('text/plain');
+  kanbanDragTaskId = null;
+  const targetStatus = col.dataset?.kanbanCol;
+  if (taskId && targetStatus) void moveKanbanTask(taskId, targetStatus);
+});
+
 function renderGantt(data, m) {
   renderCtrl();
   const filtering = Boolean(
@@ -1900,9 +2291,23 @@ function renderGantt(data, m) {
     || normalizeSelection(taskFilters.status).length
     || normalizeSelection(taskFilters.owner).length
     || normalizeSelection(taskFilters.milestone).length
+    || taskFilters.riskOnly
   );
-  const visibleTasks = filterTasks(data.tasks, taskFilters);
+  const visibleTasks = filterTasks(data.tasks, { ...taskFilters, today: m.today });
   $('filterCount').textContent = `${visibleTasks.length} / ${data.tasks.length} 项任务`;
+  if (timelineMode === 'kanban') {
+    if (filtering && !visibleTasks.length) {
+      $('gantt').hidden = true;
+      $('kanban').hidden = false;
+      $('timelineRange').textContent = '看板视图 · 无匹配任务';
+      renderMarkup($('kanban'), '<p class="gantt-empty">没有匹配的任务。请调整条件或点击「清空筛选」。</p>');
+      return;
+    }
+    renderKanban(data, m, visibleTasks);
+    return;
+  }
+  $('gantt').hidden = false;
+  if ($('kanban')) $('kanban').hidden = true;
   if (filtering && !visibleTasks.length) {
     $('timelineRange').textContent = '';
     renderMarkup($('gantt'), '<p class="gantt-empty">没有匹配的任务。请调整条件或点击「清空筛选」。</p>');
@@ -2357,49 +2762,6 @@ function renderClaimEvents({ activityLog = [], auditLog = [] }) {
   renderMarkup(list, markup);
 }
 
-function renderRosterDraft() {
-  const listEl = $('rosterList');
-  if (!listEl) return;
-  if (!rosterDraft.length) {
-    listEl.innerHTML = '<div class="empty">名录为空，点击下方「+ 新增负责人 / 智能体」添加。</div>';
-    return;
-  }
-  listEl.innerHTML = rosterDraft.map((item, idx) => `
-    <div class="webhook-item" data-roster-idx="${idx}">
-      <div class="webhook-row">
-        <input type="text" data-roster-field="id" value="${esc(item.id)}" placeholder="唯一标识，如 alice、codex#1" required maxlength="120">
-        <input type="text" data-roster-field="label" value="${esc(item.label || item.id)}" placeholder="显示名称，如 Alice (前端)" required maxlength="160">
-        <select data-roster-field="kind">
-          <option value="human" ${item.kind === 'human' ? 'selected' : ''}>人类负责人</option>
-          <option value="agent" ${item.kind === 'agent' ? 'selected' : ''}>AI 智能体</option>
-        </select>
-        <input type="number" data-roster-field="defaultTtlMinutes" value="${esc(item.defaultTtlMinutes ?? defaultClaimTtl(item.kind))}" min="5" max="1440" title="默认租约时长（分钟）" style="width:90px">
-        <button type="button" data-roster-remove="${idx}">移除</button>
-      </div>
-    </div>
-  `).join('');
-}
-
-function syncRosterDraftFromDom() {
-  document.querySelectorAll('#rosterList [data-roster-idx]').forEach((row) => {
-    const idx = Number(row.dataset.rosterIdx);
-    const entry = rosterDraft[idx];
-    if (!entry) return;
-    entry.id = row.querySelector('[data-roster-field="id"]').value.trim();
-    entry.label = row.querySelector('[data-roster-field="label"]').value.trim() || entry.id;
-    entry.kind = row.querySelector('[data-roster-field="kind"]').value;
-    entry.defaultTtlMinutes = Number(row.querySelector('[data-roster-field="defaultTtlMinutes"]').value) || defaultClaimTtl(entry.kind);
-  });
-}
-
-function openRosterDialog() {
-  if (!last || isTimeMachine) return;
-  rosterDraft = getMergedOwners(last.data).map((item) => ({ ...item }));
-  renderRosterDraft();
-  if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = '';
-  $('rosterDialog')?.showModal?.();
-}
-
 function openClaimActionDialog(op, taskId) {
   if (!last || isTimeMachine) return;
   const task = last.data.tasks.find((item) => item.id === taskId);
@@ -2493,7 +2855,16 @@ const m5Panels = installM5Panels({
     if ($('taskDialog')?.open && $('taskIssue') && editingTask && !isCreatingTask) $('taskIssue').innerHTML = m5Panels.issueMarkup(editingTask.id);
   },
 });
-const portfolio = installPortfolio({ esc, syncProjects: syncProjectOptions });
+const portfolio = installPortfolio({
+  esc,
+  syncProjects: syncProjectOptions,
+  onProjectsChanged: async (registry) => {
+    syncProjectOptions(registry);
+    if (currentProjectId && !registry.projects.some((p) => p.id === currentProjectId)) {
+      await switchProject(registry.default || registry.projects[0]?.id || 'default');
+    }
+  },
+});
 const timelineView = installTimelineView({ beforeOpen: closeSearchPicker });
 globalThis.addEventListener?.('hashchange', () => {
   const modeChanged = updateWorkspaceNav();
@@ -2610,56 +2981,8 @@ $('claimAndCopyHandoffBtn')?.addEventListener('click', async () => {
   }
 });
 
-// T-71: 名录管理弹窗与认领/续租/接管/释放操作弹窗
-$('manageRosterBtn')?.addEventListener('click', openRosterDialog);
+// T-71: 协同面板刷新与认领/续租/接管/释放操作弹窗
 $('refreshClaimsBtn')?.addEventListener('click', () => { void refreshClaims(); });
-$('closeRosterDialog')?.addEventListener('click', () => $('rosterDialog')?.close?.());
-$('addRosterMemberBtn')?.addEventListener('click', () => {
-  syncRosterDraftFromDom();
-  rosterDraft.push({
-    id: `member-${rosterDraft.length + 1}`,
-    label: `成员 ${rosterDraft.length + 1}`,
-    kind: 'human',
-    defaultTtlMinutes: 480,
-  });
-  renderRosterDraft();
-});
-$('rosterList')?.addEventListener('change', (e) => {
-  if (e.target?.dataset?.rosterField === 'kind') {
-    const row = e.target.closest('[data-roster-idx]');
-    const ttlInput = row?.querySelector('[data-roster-field="defaultTtlMinutes"]');
-    if (ttlInput) ttlInput.value = defaultClaimTtl(e.target.value);
-  }
-});
-$('rosterList')?.addEventListener('click', (e) => {
-  const rm = e.target.closest('[data-roster-remove]');
-  if (!rm) return;
-  syncRosterDraftFromDom();
-  rosterDraft.splice(Number(rm.dataset.rosterRemove), 1);
-  renderRosterDraft();
-});
-$('rosterForm')?.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!last || isTimeMachine || rosterBusy) return;
-  syncRosterDraftFromDom();
-  rosterBusy = true;
-  if ($('saveRosterBtn')) $('saveRosterBtn').disabled = true;
-  if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = '正在保存名录…';
-  try {
-    await callClaimsApi({
-      action: 'roster',
-      roster: rosterDraft,
-      cleanupOrphans: Boolean($('rosterCleanupOrphans')?.checked),
-    });
-    $('rosterDialog')?.close?.();
-    await refreshClaims();
-  } catch (err) {
-    if ($('rosterDialogStatus')) $('rosterDialogStatus').textContent = err.message || '保存名录失败';
-  } finally {
-    rosterBusy = false;
-    if ($('saveRosterBtn')) $('saveRosterBtn').disabled = false;
-  }
-});
 
 $('closeClaimAction')?.addEventListener('click', () => $('claimActionDialog')?.close?.());
 $('claimActionDialog')?.addEventListener('close', () => { if (!$('claimActionDialog').open) claimActionState = null; });
@@ -2767,6 +3090,9 @@ const ownerPanel = installOwnerPanel($, {
     if (owners.includes(from)) setTaskFilters({ ...taskFilters, owner: owners.map((o) => (o === from ? to : o)) });
     if (todayActionOwners.includes(from)) todayActionOwners = [...new Set(todayActionOwners.map((o) => (o === from ? to : o)))];
     await refresh();
+  },
+  onChanged: async () => {
+    await refreshClaims();
   },
 });
 setPlanAvailable(false);

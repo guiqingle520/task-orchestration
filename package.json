@@ -26,7 +26,6 @@
     "plan/plan.template.md",
     "docs/PLAN_SPEC.md",
     "docs/USER_MANUAL.md",
-    "docs/images/user-manual/",
     ".agents/skills/generate-plan/SKILL.md",
     "rules/AGENTS.md",
     "assets/logo.svg",

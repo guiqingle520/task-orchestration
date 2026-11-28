@@ -14,7 +14,11 @@
     <div class="workspace-project">
       <label for="projectSelect">当前项目</label>
       <select id="projectSelect" class="proj-select" aria-label="选择工作区项目"></select>
-      <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 添加项目</button>
+      <div class="workspace-project-actions">
+        <button type="button" id="addProjectBtn" class="btn-sm" title="注册本地项目路径">+ 添加项目</button>
+        <button type="button" id="setDefaultProjectBtn" class="btn-sm" title="将当前项目设为默认打开项">设为默认</button>
+        <button type="button" id="removeProjectBtn" class="btn-sm" title="从工作区移除当前项目（不删本地文件）">移除</button>
+      </div>
     </div>
     <nav class="workspace-nav" aria-label="驾驶舱导航">
       <div class="nav-label">工作区</div>
@@ -75,6 +79,10 @@
           <div class="timeline-heading">
             <div><h2 id="timeline-title">计划时间线</h2><p id="timelineRange"></p></div>
             <div class="timeline-heading-actions">
+              <div class="seg timeline-mode-switch" id="timelineModeSwitch" role="group" aria-label="切换时间线视图">
+                <button type="button" data-timeline-mode="gantt" class="on" aria-pressed="true">甘特图</button>
+                <button type="button" data-timeline-mode="kanban" aria-pressed="false">看板</button>
+              </div>
               <div id="timelineActions" class="gctrl timeline-actions"></div>
               <button type="button" class="timeline-focus-planner" id="timelineFocusPlanner" aria-pressed="false" disabled>规划模式</button>
               <button type="button" id="timelineDetailJump" class="timeline-detail-link">任务详情 ↓</button>
@@ -122,6 +130,12 @@
           <div class="simulation-controls"><label><input type="checkbox" id="simEnabled"> 模拟演练</label><span>拖动时间线上的蓝色任务条，或选择任务输入延期天数。</span><div class="simulation-task"><label for="simTask">任务</label> <select id="simTask"></select></div><label>延期天数 <input id="simDays" type="number" min="0" max="3650" value="0"></label><button type="button" id="simApply">推演</button><button type="button" id="simReset">清空推演</button></div>
           <div id="simResult" class="sim-result" aria-live="polite"></div>
           <div class="task-filters" id="taskFilters" role="group" aria-label="筛选时间线和跟进任务" hidden>
+            <div class="task-filter-presets" id="taskFilterPresets" role="group" aria-label="快捷筛选">
+              <button type="button" class="filter-preset-btn on" data-filter-preset="all" aria-pressed="true">全部</button>
+              <button type="button" class="filter-preset-btn" data-filter-preset="open" aria-pressed="false">未完成</button>
+              <button type="button" class="filter-preset-btn" data-filter-preset="doing" aria-pressed="false">进行中</button>
+              <button type="button" class="filter-preset-btn" data-filter-preset="risk" aria-pressed="false">阻塞与逾期</button>
+            </div>
             <div class="task-filter-field"><label for="taskQuery">搜索任务</label><input type="search" id="taskQuery" placeholder="输入任务编号或标题" autocomplete="off"></div>
             <div class="task-filter-field"><label for="filterStatus">状态</label><select id="filterStatus" multiple data-empty-label="全部状态"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></div>
             <div class="task-filter-field"><label for="filterOwner">负责人</label><select id="filterOwner" multiple data-empty-label="全部负责人"></select></div>
@@ -130,6 +144,8 @@
           </div>
           </div>
           <div id="gantt"></div>
+          <div id="kanbanNotice" class="kanban-notice" role="status" hidden></div>
+          <div id="kanban" class="kanban-board" hidden></div>
           </div>
           <div id="detail" class="detail" tabindex="-1"></div>
           <section id="follow-up" class="follow-up" aria-labelledby="follow-up-title" hidden>
@@ -178,7 +194,7 @@
           </div>
         </section>
         <section class="card" id="loadCard" data-views="capacity">
-          <div class="card-head"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><button type="button" class="btn-sm" id="manageOwnersBtn">维护负责人</button></div>
+          <div class="card-head"><h2>人员负载<small>每周并行峰值（按计划负责人）</small></h2><button type="button" class="btn-sm" id="manageOwnersBtn">管理团队与智能体</button></div>
           <div id="load"></div>
         </section>
         <section class="card" id="capacityCard" data-views="capacity">
@@ -191,7 +207,6 @@
               <h2 id="claimsLiveTitle">在岗执行动态与负责人名录<small id="claimsProjectTag">当前项目</small></h2>
             </div>
             <div class="snapshot-controls">
-              <button type="button" class="btn-sm" id="manageRosterBtn">管理负责人名录</button>
               <button type="button" class="btn-sm" id="refreshClaimsBtn">刷新动态</button>
             </div>
           </div>
@@ -249,6 +264,13 @@
     <div id="execFields">
       <label>状态 <select id="taskStatus"><option value="todo">未开始</option><option value="doing">进行中</option><option value="blocked">阻塞</option><option value="done">已完成</option></select></label>
       <label>进度 (%) <input id="taskProgress" type="number" min="0" max="100" step="1" required></label>
+      <div class="progress-presets" id="taskProgressPresets" role="group" aria-label="快捷进度">
+        <button type="button" class="btn-sm" data-progress-preset="0">0%</button>
+        <button type="button" class="btn-sm" data-progress-preset="25">25%</button>
+        <button type="button" class="btn-sm" data-progress-preset="50">50%</button>
+        <button type="button" class="btn-sm" data-progress-preset="75">75%</button>
+        <button type="button" class="btn-sm" data-progress-preset="100">100%</button>
+      </div>
       <label id="taskActorRow">执行人标识（持有认领锁时必填） <input id="taskExecActor" type="text" maxlength="120" list="ownerRosterList" placeholder="如 codex、antigravity 或成员名（无锁可留空）"></label>
     </div>
     <p id="taskMessage" role="status"></p>
@@ -263,10 +285,10 @@
 
 <dialog id="ownersDialog" class="task-dialog owners-dialog" aria-labelledby="ownersTitle">
   <div class="card-head">
-    <h2 id="ownersTitle">维护负责人</h2>
-    <button type="button" id="addOwnerBtn">+ 新增负责人</button>
+    <h2 id="ownersTitle">管理团队与智能体</h2>
+    <button type="button" id="addOwnerBtn">+ 新增成员 / 智能体</button>
   </div>
-  <ul id="ownersList" class="owners-list" aria-label="当前项目负责人"></ul>
+  <ul id="ownersList" class="owners-list" aria-label="当前项目团队与智能体"></ul>
   <p id="ownersMessage" role="status"></p>
   <div class="dialog-actions"><button type="button" id="closeOwners">关闭</button></div>
 </dialog>
@@ -278,6 +300,15 @@
     <label id="ownerNameRow"><span id="ownerNameLabel">负责人名称</span><input id="ownerName" type="text" maxlength="60" autocomplete="off" list="ownerNames"></label>
     <datalist id="ownerNames"></datalist>
     <label id="ownerRoleRow">角色备注（选填）<input id="ownerRole" type="text" maxlength="60"></label>
+    <div id="ownerProfileRow" class="field-row">
+      <label>成员类型
+        <select id="ownerKind">
+          <option value="human">人类负责人</option>
+          <option value="agent">AI 智能体</option>
+        </select>
+      </label>
+      <label>默认租约 (分钟) <input id="ownerTtl" type="number" min="5" max="1440" value="480"></label>
+    </div>
     <label id="ownerReasonRow">变更原因（选填）<input id="ownerReason" type="text"></label>
     <p id="ownerEditMessage" role="status"></p>
     <div class="dialog-actions">
@@ -449,23 +480,6 @@
   </div>
 </dialog>
 
-<dialog id="rosterDialog" class="task-dialog m5-wide" aria-labelledby="rosterDialogTitle">
-  <form id="rosterForm">
-    <h2 id="rosterDialogTitle">管理负责人与智能体名录</h2>
-    <p class="empty">自动聚合 plan.md 计划负责人与历史活跃执行人。可在此维护显示名、分类（人类成员默认 480m 租约 / AI 智能体默认 30m 租约）及新增协同负责人。</p>
-    <div id="rosterList" class="webhook-list"></div>
-    <div class="snapshot-controls">
-      <button type="button" id="addRosterMemberBtn">+ 新增负责人 / 智能体</button>
-      <label><input id="rosterCleanupOrphans" type="checkbox" checked> 保存时清理已删除任务的孤儿租约</label>
-    </div>
-    <p id="rosterDialogStatus" role="status"></p>
-    <div class="dialog-actions">
-      <button type="button" id="closeRosterDialog">取消</button>
-      <button type="submit" id="saveRosterBtn">保存名录</button>
-    </div>
-  </form>
-</dialog>
-
 <dialog id="claimActionDialog" class="task-dialog" aria-labelledby="claimActionTitle">
   <form id="claimActionForm">
     <h2 id="claimActionTitle">任务认领与锁操作</h2>
@@ -493,6 +507,8 @@
     </div>
   </form>
 </dialog>
+
+<div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
 <script type="module" src="app.js"></script>
 </body>

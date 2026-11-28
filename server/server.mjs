@@ -8,7 +8,7 @@ import { parseFrontMatter, serializePlanMarkdown, validate } from '../scripts/va
 import { getTaskCommitsMap, parseCommitMessage, readGitCommits, syncPlanFromCommits, updatePlanMarkdown, verifyTaskUpdates } from '../scripts/sync-git-progress.mjs';
 import { createWorkspaces } from './workspaces.mjs';
 import { extractAcceptanceByTask } from './plan-acceptance.mjs';
-import { summarizeProject, validPortfolioDate } from './portfolio.mjs';
+import { aggregatePortfolioActions, summarizePortfolioDetails, summarizeProject, validPortfolioDate } from './portfolio.mjs';
 import { createWebhookService } from './webhooks.mjs';
 import { getPlanAtCommit, HistoryError, listPlanHistory, readPlanHistory, summarizePlanFrame } from './history.mjs';
 import { buildStandaloneHtml, ExportInputError, normalizeExportOptions } from './exporter.mjs';
@@ -16,7 +16,7 @@ import { CapacityConfigError, normalizeCapacityConfig, readCapacityConfig, write
 import { createIntegrationService, IntegrationError } from './integrations.mjs';
 import { createFolderPicker, FolderPickerError } from './folder-picker.mjs';
 import { getClaimsSnapshot, mutateClaims, withClaimsSnapshot } from './claim-service.mjs';
-import { ClaimError, checkTaskWrite, claimsPath, completeClaim, recordClaimEvent, writeClaims } from './claims.mjs';
+import { ClaimError, checkTaskWrite, claimsPath, completeClaim, readClaims, recordClaimEvent, writeClaims } from './claims.mjs';
 import { atomicReplaceFile, PlanLockError, revisionOf, withPlanLock } from './plan-lock.mjs';
 import {
   applyOwnerRenameToRoster, mergeOwnersWithPlan, normalizeOwnerName, normalizeOwnersConfig,
@@ -73,6 +73,12 @@ function watchProject(project) {
     watcher.on('error', (err) => console.error('计划文件监听失败:', err.message));
     watchers.set(project.id, watcher);
   } catch (err) { console.error('计划文件监听失败:', err.message); }
+}
+function unwatchProject(projectId) {
+  const watcher = watchers.get(projectId);
+  if (!watcher) return;
+  try { watcher.close(); } catch { /* 忽略关闭失败 */ }
+  watchers.delete(projectId);
 }
 for (const project of workspaces.read().projects) watchProject(project);
 
@@ -374,8 +380,17 @@ createServer((req, res) => {
     try {
       const registry = workspaces.read();
       const readRegisteredPlan = ({ id }) => readPlanSnapshot(workspaces.get(id, registry));
-      const projects = registry.projects.map(project => summarizeProject(project, today, readRegisteredPlan));
-      return json(res, 200, { today, default: registry.default, projects });
+      const readRegisteredClaims = ({ id }) => readClaims(workspaces.get(id, registry).planPath);
+      const actionBuckets = [];
+      const projects = registry.projects.map((project) => {
+        const summary = summarizeProject(project, today, readRegisteredPlan);
+        if (summary.health === 'unavailable') return summary;
+        const details = summarizePortfolioDetails(project, today, readRegisteredPlan, readRegisteredClaims);
+        if (!details) return summary;
+        actionBuckets.push(details.actions);
+        return { ...summary, doingCount: details.doingCount, activeAgentCount: details.activeAgentCount };
+      });
+      return json(res, 200, { today, default: registry.default, projects, todayActions: aggregatePortfolioActions(actionBuckets) });
     } catch { return json(res, 500, { message: '无法读取工作区项目列表' }); }
   }
   if (url.pathname === '/api/projects' && req.method === 'GET') {
@@ -400,6 +415,26 @@ createServer((req, res) => {
   if (url.pathname === '/api/projects' && req.method === 'POST') {
     return withJsonBody(req, res, 16 * 1024, (input) => {
       try { const added = workspaces.add(input); watchProject(added); json(res, 200, { ok: true, project: added }); }
+      catch (err) { json(res, 400, { message: err.message }); }
+    });
+  }
+  if ((url.pathname === '/api/projects/remove' && req.method === 'POST') || (url.pathname === '/api/projects' && req.method === 'DELETE')) {
+    const queryId = url.searchParams.get('project') || url.searchParams.get('id') || '';
+    const removeById = (id) => {
+      try {
+        const result = workspaces.remove(id);
+        unwatchProject(result.removed.id);
+        json(res, 200, { ok: true, ...result });
+      } catch (err) { json(res, 400, { message: err.message }); }
+    };
+    if (req.method === 'DELETE' && (!req.headers['content-type'] || req.headers['content-length'] === '0')) {
+      return removeById(queryId);
+    }
+    return withJsonBody(req, res, 4 * 1024, (input) => removeById(input?.id || queryId));
+  }
+  if (url.pathname === '/api/projects/default' && req.method === 'POST') {
+    return withJsonBody(req, res, 4 * 1024, (input) => {
+      try { json(res, 200, { ok: true, ...workspaces.setDefault(input?.id) }); }
       catch (err) { json(res, 400, { message: err.message }); }
     });
   }

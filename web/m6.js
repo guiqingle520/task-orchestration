@@ -8,14 +8,16 @@ const toFilterSet = (value) => {
   return [];
 };
 
-export function filterTasks(tasks, { query = '', status = '', owner = '', milestone = '' } = {}) {
+export function filterTasks(tasks, { query = '', status = '', owner = '', milestone = '', riskOnly = false, today = '' } = {}) {
   const search = normalizeQuery(query);
   const statuses = toFilterSet(status);
   const owners = toFilterSet(owner);
   const milestones = toFilterSet(milestone);
+  const cutoff = riskOnly && today ? toDay(today) : null;
   return tasks.filter(task => (!statuses.length || statuses.includes(task.status))
     && (!owners.length || owners.includes(task.owner))
     && (!milestones.length || milestones.includes(task.milestone))
+    && (cutoff === null || (task.status !== 'done' && (task.status === 'blocked' || toDay(task.end) < cutoff)))
     && (!search || normalizeQuery(task.id).includes(search) || normalizeQuery(task.title).includes(search)));
 }
 

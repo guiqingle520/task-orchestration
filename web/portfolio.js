@@ -6,7 +6,7 @@ const compareName = (a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: t
 export const formatProjectProgress = progress => `${Math.round(progress)}%`;
 export const formatNextMilestone = milestone => milestone ? `${milestone.id} · ${milestone.name}（${milestone.due}）` : '无待交付里程碑';
 
-export function makePortfolioView({ today, projects }) {
+export function makePortfolioView({ today, projects, todayActions }) {
   const available = projects.filter(project => project.health !== 'unavailable').sort((a, b) =>
     Number(riskCount(b) > 0) - Number(riskCount(a) > 0)
     || b.blockedCount - a.blockedCount || b.overdueCount - a.overdueCount
@@ -16,6 +16,11 @@ export function makePortfolioView({ today, projects }) {
     today, available, unavailable, total: projects.length,
     blocked: available.reduce((total, project) => total + project.blockedCount, 0),
     overdue: available.reduce((total, project) => total + project.overdueCount, 0),
+    todayActions: {
+      blocked: Array.isArray(todayActions?.blocked) ? todayActions.blocked : [],
+      doing: Array.isArray(todayActions?.doing) ? todayActions.doing : [],
+      ready: Array.isArray(todayActions?.ready) ? todayActions.ready : [],
+    },
   };
 }
 

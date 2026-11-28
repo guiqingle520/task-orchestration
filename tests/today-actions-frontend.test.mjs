@@ -447,6 +447,8 @@ test('T-70 & T-71: Multi-owner roster, step-by-step claim and copy with clipboar
 
   // 同 owner 与 actor 认领后合并显示「antigravity 执行中」
   assert.match(elements.get('todayReadyList').innerHTML, /antigravity 执行中（剩余 30m）/);
+  assert.match(elements.get('todayDoingList').innerHTML, /T-70/);
+  assert.match(elements.get('todayDoingList').innerHTML, /已认领·待更新进度/);
   assert.match(elements.get('gantt').innerHTML, /🔒 antigravity/);
 
   // 4. 超时租约接管二次确认交互（T-71）
@@ -562,4 +564,232 @@ test('T-70 & T-71: Multi-owner roster, step-by-step claim and copy with clipboar
   assert.match(elements.get('claimsLiveNotice').textContent, /历史回放，不显示实时认领/);
   assert.equal(eventDetails.hidden, true);
   assert.doesNotMatch(elements.get('gantt').innerHTML, /gantt-claim-badge/);
+});
+
+test('M11 frontend: T-79 presets & per-project filter persistence + T-80 dblclick & progress presets + T-82 planner reason prefill', async () => {
+  const elements = new Map();
+  const makeOption = (value, textContent = value) => ({ value, textContent, selected: false, dataset: {} });
+  const makeClassList = () => {
+    const set = new Set();
+    return {
+      add: (...cls) => cls.forEach((c) => set.add(c)),
+      remove: (...cls) => cls.forEach((c) => set.delete(c)),
+      toggle: (c, force) => (force === undefined ? (set.has(c) ? set.delete(c) : set.add(c)) : (force ? set.add(c) : set.delete(c))),
+      contains: (c) => set.has(c),
+    };
+  };
+  const makeButton = (dataset = {}) => {
+    const attrs = {};
+    return {
+      dataset,
+      classList: makeClassList(),
+      setAttribute: (k, v) => { attrs[k] = v; },
+      getAttribute: (k) => attrs[k],
+    };
+  };
+  const presetBtns = ['all', 'open', 'doing', 'risk'].map((p) => makeButton({ filterPreset: p }));
+  const progressBtns = ['0', '25', '50', '75', '100'].map((p) => makeButton({ progressPreset: p }));
+
+  const makeEl = (id) => {
+    const listeners = {};
+    let html = '';
+    const el = {
+      id,
+      value: '',
+      hidden: false,
+      disabled: false,
+      open: false,
+      checked: false,
+      textContent: '',
+      dataset: {},
+      style: {},
+      classList: makeClassList(),
+      attributes: {},
+      setAttribute(k, v) { this.attributes[k] = v; },
+      getAttribute(k) { return this.attributes[k]; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      closest() { return null; },
+      focus() {},
+      scrollIntoView() {},
+      showModal() { this.open = true; },
+      close() { this.open = false; },
+      addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+      dispatch(type, ev = {}) {
+        const event = { preventDefault() {}, target: this, ...ev };
+        if (event.target && !event.target.closest) event.target.closest = () => null;
+        return Promise.all((listeners[type] || []).map((fn) => fn(event)));
+      },
+      get innerHTML() { return html; },
+      set innerHTML(v) {
+        html = String(v);
+        if (this.tagName === 'SELECT' || ['filterOwner', 'filterMilestone', 'todayActionOwner', 'projectSelect'].includes(id)) {
+          this.options = [...html.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\/option>/g)].map((m) => makeOption(m[1], m[2]));
+        }
+      },
+    };
+    if (['filterStatus', 'filterOwner', 'filterMilestone', 'todayActionOwner'].includes(id)) {
+      el.multiple = true;
+      el.options = id === 'filterStatus'
+        ? ['todo', 'doing', 'done', 'blocked'].map((s) => makeOption(s, s))
+        : [];
+    } else if (id === 'projectSelect') {
+      el.options = [];
+    }
+    return el;
+  };
+
+  const docListeners = {};
+  globalThis.document = {
+    body: { dataset: {}, classList: makeClassList() },
+    documentElement: {},
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, makeEl(id));
+      return elements.get(id);
+    },
+    addEventListener(type, fn) { (docListeners[type] ||= []).push(fn); },
+    querySelector() { return null; },
+    querySelectorAll(sel) {
+      if (sel === '#taskFilterPresets [data-filter-preset]') return presetBtns;
+      if (sel === '#taskProgressPresets [data-progress-preset]') return progressBtns;
+      return [];
+    },
+  };
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => storage.get(k) ?? null,
+    setItem: (k, v) => storage.set(k, String(v)),
+    removeItem: (k) => storage.delete(k),
+  };
+  globalThis.location = new URL('http://localhost:5173/?project=default');
+  globalThis.history = { pushState() {}, replaceState() {} };
+  globalThis.setInterval = () => 0;
+  globalThis.EventSource = class {
+    addEventListener() {}
+    close() {}
+  };
+
+  const planA = {
+    project: 'proj-a',
+    milestones: [{ id: 'M1', name: '第一阶段', due: '2026-11-30' }],
+    tasks: [
+      { id: 'T-1', title: '逾期任务', owner: 'dev', milestone: 'M1', start: '2026-11-10', end: '2026-11-15', deps: [], status: 'todo', progress: 0, actualStart: null, actualEnd: null },
+      { id: 'T-2', title: '阻塞任务', owner: 'dev', milestone: 'M1', start: '2026-11-20', end: '2026-11-28', deps: [], status: 'blocked', progress: 20, actualStart: '2026-11-20', actualEnd: null },
+      { id: 'T-3', title: '正常进行', owner: 'dev', milestone: 'M1', start: '2026-11-20', end: '2026-11-28', deps: [], status: 'doing', progress: 50, actualStart: '2026-11-20', actualEnd: null },
+      { id: 'T-4', title: '已完成任务', owner: 'dev', milestone: 'M1', start: '2026-11-10', end: '2026-11-12', deps: [], status: 'done', progress: 100, actualStart: '2026-11-10', actualEnd: '2026-11-12' },
+    ],
+  };
+  const planB = {
+    project: 'proj-b',
+    milestones: [{ id: 'M1', name: 'B阶段', due: '2026-12-10' }],
+    tasks: [
+      { id: 'T-10', title: '项目B任务', owner: 'bob', milestone: 'M1', start: '2026-11-20', end: '2026-12-05', deps: [], status: 'done', progress: 100, actualStart: '2026-11-20', actualEnd: '2026-11-21' },
+    ],
+  };
+  const emptyClaims = (projectId) => ({
+    projectId, today: '2026-11-22', now: '2026-11-22T08:00:00.000Z',
+    roster: [], configuredRoster: [], claims: {},
+    summary: { active: 0, stale: 0, orphaned: 0, done_pending_reconcile: 0 },
+    activityLog: [], auditLog: [],
+  });
+
+  globalThis.fetch = async (url) => {
+    const projectId = new URL(url, 'http://localhost').searchParams.get('project') || 'default';
+    if (url.startsWith('/api/plan')) {
+      const data = projectId === 'proj-b' ? planB : planA;
+      return { ok: true, json: async () => ({ projectId, data: structuredClone(data), acceptanceByTask: {}, revision: `rev-${projectId}`, commits: {}, errors: [] }) };
+    }
+    if (url.startsWith('/api/claims')) return { ok: true, json: async () => emptyClaims(projectId) };
+    if (url.startsWith('/api/owners')) return { ok: true, json: async () => ({ owners: [], roster: [] }) };
+    if (url.startsWith('/api/projects')) {
+      return {
+        ok: true,
+        json: async () => ({
+          default: 'default',
+          projects: [
+            { id: 'default', name: 'proj-a', health: 'yellow', overall: 42 },
+            { id: 'proj-b', name: 'proj-b', health: 'green', overall: 100 },
+          ],
+        }),
+      };
+    }
+    if (url.startsWith('/api/history')) {
+      return {
+        ok: true,
+        json: async () => ({
+          projectId,
+          commits: [{ hash: 'h1', shortHash: 'h1', date: '2026-11-20', author: 'dev', subject: 'snap', overall: 42, doneCount: 1, taskCount: 4 }],
+          frames: { h1: { data: structuredClone(planA), acceptanceByTask: {} } },
+        }),
+      };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  await import(`../web/app.js?t=${Date.now() + 2}`);
+  await new Promise((r) => setTimeout(r, 40));
+
+  // T-79: 点击「阻塞与逾期」快捷筛选预设
+  await elements.get('taskFilterPresets').dispatch('click', {
+    target: { closest: (sel) => (sel === '[data-filter-preset]' ? { dataset: { filterPreset: 'risk' } } : null) },
+  });
+  assert.equal(elements.get('filterCount').textContent, '2 / 4 项任务');
+  assert.equal(presetBtns.find((b) => b.dataset.filterPreset === 'risk').classList.contains('on'), true);
+  assert.deepEqual(JSON.parse(storage.get('task-orchestration.filters.default')), { riskOnly: true });
+
+  // T-79: 点击「未完成」快捷筛选，切换到 proj-b 不串扰，切回 default 自动恢复
+  await elements.get('taskFilterPresets').dispatch('click', {
+    target: { closest: (sel) => (sel === '[data-filter-preset]' ? { dataset: { filterPreset: 'open' } } : null) },
+  });
+  assert.equal(elements.get('filterCount').textContent, '3 / 4 项任务');
+
+  elements.get('projectSelect').value = 'proj-b';
+  await elements.get('projectSelect').dispatch('change');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(elements.get('filterCount').textContent, '1 / 1 项任务');
+  assert.equal(presetBtns.find((b) => b.dataset.filterPreset === 'all').classList.contains('on'), true);
+
+  elements.get('projectSelect').value = 'default';
+  await elements.get('projectSelect').dispatch('change');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(elements.get('filterCount').textContent, '3 / 4 项任务');
+  assert.equal(presetBtns.find((b) => b.dataset.filterPreset === 'open').classList.contains('on'), true);
+
+  // T-80: 双击甘特任务行打开弹窗，点击进度预设自动联动状态
+  await docListeners.dblclick[0]({
+    target: { closest: (sel) => (sel === '.lrow[data-id], .band[data-id]' ? { dataset: { id: 'T-1' } } : null) },
+  });
+  assert.equal(elements.get('taskDialog').open, true);
+  assert.match(elements.get('taskTitle').textContent, /T-1/);
+
+  await elements.get('taskProgressPresets').dispatch('click', {
+    target: { closest: (sel) => (sel === '[data-progress-preset]' ? { dataset: { progressPreset: '50' } } : null) },
+  });
+  assert.equal(elements.get('taskProgress').value, 50);
+  assert.equal(elements.get('taskStatus').value, 'doing');
+  assert.equal(progressBtns.find((b) => b.dataset.progressPreset === '50').classList.contains('on'), true);
+
+  await elements.get('taskProgressPresets').dispatch('click', {
+    target: { closest: (sel) => (sel === '[data-progress-preset]' ? { dataset: { progressPreset: '100' } } : null) },
+  });
+  assert.equal(elements.get('taskProgress').value, 100);
+  assert.equal(elements.get('taskStatus').value, 'done');
+  await elements.get('closeTask').dispatch('click');
+
+  // T-82: 规划模式下新建任务 / 新建里程碑自动预填变更原因
+  const clickDoc = (selector, target) => docListeners.click[0]({ target: { closest: (sel) => (sel === selector ? target : null) } });
+  await clickDoc('[data-act]', { dataset: { act: 'new-task' } });
+  assert.equal(elements.get('planChangeReason').value, '新增任务 T-5');
+  await elements.get('closeTask').dispatch('click');
+  await clickDoc('[data-act]', { dataset: { act: 'new-milestone' } });
+  assert.equal(elements.get('msReasonInput').value, '新增里程碑 M2');
+  await elements.get('closeMilestone').dispatch('click');
+
+  // T-80: 时间机器模式下双击甘特行不得打开编辑弹窗
+  await clickDoc('[data-act]', { dataset: { act: 'toggle-time-machine' } });
+  await new Promise((r) => setTimeout(r, 30));
+  await docListeners.dblclick[0]({
+    target: { closest: (sel) => (sel === '.lrow[data-id], .band[data-id]' ? { dataset: { id: 'T-1' } } : null) },
+  });
+  assert.equal(elements.get('taskDialog').open, false);
 });

@@ -31,6 +31,12 @@ milestones:
   - id: M10
     name: 发布 task-cockpit 1.2.0
     due: 2026-12-04
+  - id: M11
+    name: 体验提效与统一收口
+    due: 2026-12-11
+  - id: M12
+    name: 看板视图与人机协同工作台升级
+    due: 2026-12-16
 tasks:
   - id: T-16
     title: 编写 Antigravity 代理启动脚本并验证端口检测与启动参数
@@ -879,6 +885,83 @@ tasks:
     progress: 100
     actualStart: 2026-11-28
     actualEnd: 2026-11-28
+  - id: T-78
+    title: 瘦身 npm 打包清单移除手册大图，将包体积从 1.6MB 降至约 150KB 并验证打包与全量测试
+    owner: antigravity
+    milestone: M11
+    start: 2026-12-07
+    end: 2026-12-07
+    deps: []
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-79
+    title: 实现时间线快捷筛选胶囊（全部/未完成/进行中/阻塞与逾期）与按项目持久化筛选偏好
+    owner: antigravity
+    milestone: M11
+    start: 2026-12-07
+    end: 2026-12-08
+    deps: [T-78]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-80
+    title: 实现甘特图双击编辑、快捷进度档位按钮与今日行动收录已认领待更新进度任务
+    owner: antigravity
+    milestone: M11
+    start: 2026-12-08
+    end: 2026-12-09
+    deps: [T-79]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-81
+    title: 合并维护负责人与管理负责人名录为统一团队与智能体名录入口并保持双文件兼容
+    owner: antigravity
+    milestone: M11
+    start: 2026-12-09
+    end: 2026-12-10
+    deps: [T-80]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-82
+    title: 新增工作区项目移除与设为默认接口及界面入口，规划模式自动预填变更原因
+    owner: antigravity
+    milestone: M11
+    start: 2026-12-10
+    end: 2026-12-11
+    deps: [T-81]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-83
+    title: 实现时间线甘特图/看板（Kanban）切换视图，支持拖拽更新状态与认领锁/只读隔离
+    owner: antigravity
+    milestone: M12
+    start: 2026-12-14
+    end: 2026-12-15
+    deps: [T-82]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
+  - id: T-84
+    title: 实现跨项目进行中/在岗 AI 计数与今日行动聚合，并增加外部 AI 变更轻量 Toast 提醒
+    owner: antigravity
+    milestone: M12
+    start: 2026-12-15
+    end: 2026-12-16
+    deps: [T-83]
+    status: done
+    progress: 100
+    actualStart: 2026-11-28
+    actualEnd: 2026-11-28
 ---
 
 # 计划说明
@@ -1031,3 +1114,24 @@ tasks:
 变更记录:2026-11-28 规划者按用户反馈新增 M10 的 T-77（时间线状态/负责人/里程碑及今日行动负责人下拉框支持多选组合筛选，支持勾选多项与一键清空），由 antigravity 当日开始实现。
 变更记录:2026-11-28 antigravity 完成 T-77；filterTasks 与时间线状态/负责人/里程碑、今日行动负责人下拉框全面支持多选（带搜索、摘要标签与弹层内一键清空已选），保持向后兼容，全量前端与单元测试通过。
 变更记录:2026-11-28 antigravity 核验 task-cockpit@1.2.0 已在线上 npm 发布（标记 T-75 完成），并升级版本至 1.2.1 以包含 T-76（进行中动态与四态可视化）和 T-77（筛选多选下拉框）。
+
+### M11 · 体验提效与统一收口
+
+| 任务 | 验收标准 |
+|---|---|
+| T-78 | `package.json` 的 `files` 移除 `docs/images/user-manual/` 截图目录，`npm pack --dry-run` 打包体积降至约 150KB 且不缺失 CLI、Web、MCP 及文档运行所需文件；全量自动化测试通过。 |
+| T-79 | 时间线筛选条上方提供「全部 / 未完成 / 进行中 / 阻塞与逾期」快捷胶囊，点击可同步勾选对应状态并刷新甘特图与跟进列表；筛选状态按项目持久化到 `localStorage`，刷新页面后保持且切换项目互不串扰。 |
+| T-80 | 甘特图支持双击任务行直接打开编辑弹窗（时间机器只读模式除外）；编辑弹窗新增 `0% / 25% / 50% / 75% / 100%` 快捷进度按钮并自动联动状态；「今日行动 → 进行中」同步展示已被活跃认领（`claim.state === 'active'`）但仍为 `todo` 的任务并标注「已认领·待更新进度」。 |
+| T-81 | 合并「负载与工时」页的「维护负责人」与「管理负责人名录」为单一入口「管理团队与智能体」，在同一弹窗中统一维护姓名、类型（人类/AI）、默认租约时长、备注、启用/停用、无任务项删除与「更名并更新当前计划」，底层兼容读写 `owners.json` 与 `claims.json`。 |
+| T-82 | 服务端提供项目移除（`DELETE /api/projects` 或 `POST /api/projects/remove`，仅移除注册不删本地文件，保护最后一个项目或自动回退默认项）与设为默认项目接口；在「跨项目总览」不可用/可用项目卡片及项目区提供对应入口；规划模式新建、改期、拆分、建/解依赖时自动预填单行默认变更原因（仍允许用户改写）。 |
+
+### M12 · 看板视图与人机协同工作台升级
+
+| 任务 | 验收标准 |
+|---|---|
+| T-83 | 计划时间线支持「甘特图 / 看板」视图切换，复用现有筛选器；看板按未开始 / 进行中 / 阻塞 / 已完成四列展示（已完成列默认折叠较早任务，支持展开），支持拖拽卡片跨列更新状态并严格复用现有并发锁、M9 认领锁校验及时间机器只读隔离。 |
+| T-84 | 「跨项目总览」每张可用项目卡片补充展示「进行中 X 项 · 在岗 AI Y 个」，并新增跨项目今日行动聚合列表（汇总各可用项目的阻塞、进行中与可开工任务）；当 SSE 收到外部智能体更新任务为 `done` / `blocked` 或认领变化时，在页面右上角弹出非侵入式 Toast 提示并支持点击定位任务。 |
+
+变更记录:2026-11-28 规划者按用户确认新增里程碑 M11（T-78 ~ T-82，2026-12-11 交付）与 M12（T-83 ~ T-84，2026-12-16 交付），均由 antigravity 承接，并将 7 项任务验收标准写入计划说明。
+变更记录:2026-11-28 antigravity 完成 M11（T-78 ~ T-82）：瘦身 npm 包、实现快捷筛选胶囊与按项目持久化、甘特双击编辑与进度档位、统一团队与智能体名录、工作区设为默认/移除及规划原因自动预填，并更新自动化测试。
+变更记录:2026-11-28 antigravity 完成 M12（T-83 ~ T-84）：实现时间线甘特图/看板视图切换与拖拽改状态、跨项目总览进行中/在岗 AI 计数与今日行动聚合、以及外部 AI 变更轻量 Toast 提醒与定位，并补充自动化测试。

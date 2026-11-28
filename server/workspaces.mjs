@@ -78,6 +78,13 @@ export function createWorkspaces(root, {
     return { state: 'missing', id, name: folder.slice(0, 100), repoRoot, preview, previewId: hash.update('\0' + preview).digest('hex') };
   }
 
+  function saveRegistry(registry) {
+    mkdirSync(dirname(configPath), { recursive: true });
+    const temporary = `${configPath}.${randomUUID()}.tmp`;
+    try { writeFileSync(temporary, JSON.stringify(registry, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 }); renameSync(temporary, configPath); }
+    finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  }
+
   function add(input) {
     const id = typeof input.id === 'string' ? input.id.trim() : '';
     const name = typeof input.name === 'string' ? input.name.trim() : '';
@@ -104,13 +111,34 @@ export function createWorkspaces(root, {
     if (registry.projects.some(item => item.planPath === file)) throw new Error('计划路径已注册');
     const project = { id, name, repoRoot, planPath: file };
     registry.projects.push(project);
-    mkdirSync(dirname(configPath), { recursive: true });
-    const temporary = `${configPath}.${randomUUID()}.tmp`;
-    try { writeFileSync(temporary, JSON.stringify(registry, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 }); renameSync(temporary, configPath); }
-    finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    saveRegistry(registry);
     return project;
   }
-  return { read, get, add, preflight };
+
+  function remove(id) {
+    const targetId = typeof id === 'string' ? id.trim() : '';
+    if (!targetId) throw new Error('请提供要移除的项目 ID');
+    const registry = read();
+    const index = registry.projects.findIndex((item) => item.id === targetId);
+    if (index < 0) throw new Error('项目不存在');
+    if (registry.projects.length <= 1) throw new Error('至少保留一个工作区项目，无法移除最后一个项目');
+    const [removed] = registry.projects.splice(index, 1);
+    if (registry.default === targetId) registry.default = registry.projects[0].id;
+    saveRegistry(registry);
+    return { removed, default: registry.default, projects: registry.projects };
+  }
+
+  function setDefault(id) {
+    const targetId = typeof id === 'string' ? id.trim() : '';
+    if (!targetId) throw new Error('请提供要设为默认的项目 ID');
+    const registry = read();
+    if (!registry.projects.some((item) => item.id === targetId)) throw new Error('项目不存在');
+    registry.default = targetId;
+    saveRegistry(registry);
+    return { default: registry.default, projects: registry.projects };
+  }
+
+  return { read, get, add, remove, setDefault, preflight };
 }
 
 export function registerWorkspace(workspaces, repoRoot) {

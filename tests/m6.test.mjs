@@ -77,3 +77,14 @@ test('task links store both IDs and discard unrelated URL state', () => {
   assert.deepEqual(readTaskLink('?task=T-9'), { project: '', task: 'T-9' });
   assert.equal(readTaskLink('?project=project-2'), null);
 });
+
+test('filterTasks supports riskOnly preset with cutoff today', () => {
+  const today = '2026-11-20';
+  const tasks = [
+    task('T-1', '2026-11-18', { status: 'todo' }),     // overdue
+    task('T-2', '2026-11-25', { status: 'blocked' }),  // blocked (future)
+    task('T-3', '2026-11-25', { status: 'doing' }),    // not overdue, not blocked
+    task('T-4', '2026-11-18', { status: 'done', progress: 100 }), // done even if past end
+  ];
+  assert.deepEqual(filterTasks(tasks, { riskOnly: true, today }).map((t) => t.id), ['T-1', 'T-2']);
+});
