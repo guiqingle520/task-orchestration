@@ -9,8 +9,8 @@
 <body class="dashboard" data-view="overview">
 <a class="skip-link" id="workspaceSkip" href="#overview">跳到项目总览</a>
 <div class="workspace-shell">
-  <aside class="workspace-rail" aria-label="工作区侧栏">
-    <div class="workspace-brand"><span class="workspace-mark" aria-hidden="true"></span><div><strong>任务时间线驾驶舱</strong><small>项目调度台</small></div></div>
+  <aside id="workspaceRail" class="workspace-rail" aria-label="工作区侧栏">
+    <div class="workspace-brand"><span class="workspace-mark" aria-hidden="true"><svg viewBox="0 0 32 32" width="32" height="32" fill="none"><rect width="32" height="32" rx="7" fill="#141414"/><rect x="7" y="8.2" width="13.5" height="3.6" rx="1.8" fill="#FFFFFF"/><circle cx="23.4" cy="10" r="1.9" fill="#3B82F6"/><rect x="14.2" y="13.6" width="3.6" height="11" rx="1.8" fill="#FFFFFF"/></svg></span><div><strong>任务时间线驾驶舱</strong><small>项目调度台</small></div></div>
     <div class="workspace-project">
       <label for="projectSelect">当前项目</label>
       <select id="projectSelect" class="proj-select" aria-label="选择工作区项目"></select>
@@ -35,7 +35,7 @@
   </aside>
   <div class="workspace-content">
     <header class="top workspace-top">
-      <div class="workspace-crumb"><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><span id="viewCrumbSep" aria-hidden="true">›</span><span id="viewCrumb">项目总览</span><strong id="portfolioCrumb" hidden>跨项目总览</strong><strong id="teamCrumb" hidden>团队与负载</strong></div>
+      <div class="workspace-crumb"><button type="button" id="railToggle" class="btn-sm rail-toggle" aria-expanded="true" aria-controls="workspaceRail" title="收起左侧栏"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.75" y="2.5" width="12.5" height="11" rx="2"/><path d="M5.75 2.5v11"/><path class="rail-chevron" d="M10.75 6.25 9 8l1.75 1.75"/></svg></button><span>工作区</span><span aria-hidden="true">›</span><strong id="project">当前项目</strong><span id="viewCrumbSep" aria-hidden="true">›</span><span id="viewCrumb">项目总览</span><strong id="portfolioCrumb" hidden>跨项目总览</strong><strong id="teamCrumb" hidden>团队与负载</strong></div>
       <div class="ctrl">
         <label class="date-control"><span>统计日</span><input type="date" id="today"></label>
         <button id="reset" title="恢复为真实今天">重置</button>

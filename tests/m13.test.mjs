@@ -319,8 +319,19 @@ test('T-86 & T-87 frontend: team-panel renders load heatmap, collision details, 
     await teamPanel.refresh('2026-11-28');
     const body = () => elements.get('teamBody').innerHTML;
     assert.match(body(), /撞车预警/);
+    assert.match(body(), /team-matrix-table/);
     assert.match(body(), /林晓 \(前端\)/);
     assert.match(body(), /codex#1/);
+
+    // 切换列表视图与矩阵视图
+    await elements.get('teamBody').dispatch('click', {
+      target: { closest: (sel) => (sel === '[data-standup-mode]' ? { dataset: { standupMode: 'list' } } : null) },
+    });
+    assert.match(body(), /team-standup-list/);
+    await elements.get('teamBody').dispatch('click', {
+      target: { closest: (sel) => (sel === '[data-standup-mode]' ? { dataset: { standupMode: 'matrix' } } : null) },
+    });
+    assert.match(body(), /team-matrix-table/);
 
     // 展开撞车明细
     await elements.get('teamBody').dispatch('click', {

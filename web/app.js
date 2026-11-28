@@ -2878,6 +2878,19 @@ const portfolio = installPortfolio({
 });
 const teamPanel = installTeamPanel({ esc, onTeamSaved: () => void refreshProjects() });
 const timelineView = installTimelineView({ beforeOpen: closeSearchPicker });
+let railCollapsed = store.get('workspace.railCollapsed', false);
+function syncRailCollapsed() {
+  document.body?.classList?.toggle?.('rail-collapsed', Boolean(railCollapsed));
+  $('railToggle')?.setAttribute?.('aria-expanded', String(!railCollapsed));
+  $('railToggle')?.setAttribute?.('title', railCollapsed ? '展开左侧栏' : '收起左侧栏');
+}
+syncRailCollapsed();
+$('railToggle')?.addEventListener('click', () => {
+  railCollapsed = !railCollapsed;
+  store.set('workspace.railCollapsed', railCollapsed);
+  syncRailCollapsed();
+  if (last && scale === 'fit' && !planGesture) renderGantt(last.data, last.m);
+});
 globalThis.addEventListener?.('hashchange', () => {
   const modeChanged = updateWorkspaceNav();
   if (location.hash === '#follow-up') {

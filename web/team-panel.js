@@ -10,11 +10,17 @@ const LOAD_LABELS = {
 export function installTeamPanel({ esc, onTeamSaved } = {}) {
   const $ = (id) => document.getElementById(id);
   let view = null;
+  let lastMarkup = null;
   let sequence = 0;
   let preset = 'all';
   let groupFilter = '';
   let search = '';
   let expandedCollisionId = null;
+  const expandedStandup = new Set();
+  let standupInitialized = false;
+  let standupMode = (() => {
+    try { return localStorage.getItem('team.standupMode') === 'list' ? 'list' : 'matrix'; } catch { return 'matrix'; }
+  })();
   let configDraft = [];
   let configBusy = false;
 
@@ -61,16 +67,15 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
     });
   }
 
-  function renderTaskLinks(items, emptyText, tagFn) {
-    if (!items.length) return `<p class="empty">${emptyText}</p>`;
-    return `<ul class="portfolio-action-list">${items.map((item) => {
+  function renderTaskLinks(items, tagFn) {
+    return `<ul class="team-task-list">${items.map((item) => {
       const href = `?project=${encodeURIComponent(item.projectId)}&amp;task=${encodeURIComponent(item.id)}#timeline`;
       const claimTag = item.claim
-        ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${item.claim.state === 'stale' ? '超时' : '持锁'} ${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` · ${item.claim.remainingMinutes}m` : ''}</span>`
+        ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${item.claim.state === 'stale' ? '超时' : '持锁'} ${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` ${item.claim.remainingMinutes}m` : ''}</span>`
         : '';
-      return `<li class="portfolio-action-item">
-        <a href="${href}"><span class="portfolio-proj-badge">${esc(item.projectName)}</span> ${esc(item.id)} · ${esc(item.title)}</a>
-        <div class="portfolio-action-sub">${tagFn(item)}${claimTag}<span>截止 ${esc(item.end)}</span></div>
+      return `<li class="team-task-row">
+        <a class="team-task-link" href="${href}"><span class="portfolio-proj-badge">${esc(item.projectName)}</span><span class="team-task-title">${esc(item.id)} · ${esc(item.title)}</span></a>
+        <div class="team-task-meta">${tagFn(item)}${claimTag}<span class="team-task-due">${esc(item.end.slice(5))}</span></div>
       </li>`;
     }).join('')}</ul>`;
   }
@@ -128,49 +133,113 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
       </table></div>` : '<p class="empty">没有符合筛选条件的成员。</p>'}
     </section>`;
 
+    if (!standupInitialized && view.members?.length) {
+      standupInitialized = true;
+      expandedStandup.clear();
+      const focus = view.members.find((m) => m.loadState === 'collision' || m.blockedCount > 0) || view.members[0];
+      if (focus) expandedStandup.add(focus.id);
+    }
+
     const standupCards = members.map((m) => {
-      const kindBadge = `<span class="roster-kind ${m.kind}">${m.kind === 'agent' ? 'AI 智能体' : '人类负责人'}</span>`;
+      const kindBadge = `<span class="roster-kind ${m.kind}">${m.kind === 'agent' ? 'AI' : '人类'}</span>`;
       const groupBadge = m.group ? `<span class="team-group-tag">${esc(m.group)}</span>` : '';
-      return `<article class="team-member-card state-${esc(m.loadState)}">
-        <header class="team-card-head">
-          <div>
-            <h3>${esc(m.label)}</h3>
-            <div class="team-card-badges">${kindBadge}${groupBadge}<span class="team-state-badge ${m.loadState}">${LOAD_LABELS[m.loadState]}</span></div>
-          </div>
-          <span class="empty">进行中 ${m.doingCount} · 阻塞 ${m.blockedCount} · 近期完成 ${m.recentDoneCount} · 可开工 ${m.readyCount}</span>
-        </header>
-        <div class="team-standup-sections">
-          <div class="team-standup-group">
-            <h4>进行中 / 持锁执行（${m.standup.doing.length}）</h4>
-            ${renderTaskLinks(m.standup.doing, '暂无进行中任务', (item) => item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">进行中 ${item.progress}%</span>`)}
-          </div>
-          <div class="team-standup-group">
-            <h4>阻塞卡点（${m.standup.blocked.length}）</h4>
-            ${renderTaskLinks(m.standup.blocked, '无阻塞任务', (item) => `<span class="status-chip red">阻塞 ${item.progress}%</span>`)}
-          </div>
-          <div class="team-standup-group">
-            <h4>近 2 天已完成（${m.standup.recentDone.length}）</h4>
-            ${renderTaskLinks(m.standup.recentDone, '近 2 天暂无完工', (item) => `<span class="status-chip green">完成于 ${esc(item.actualEnd || item.end)}</span>`)}
-          </div>
-          <div class="team-standup-group">
-            <h4>待认领 / 可开工（${m.standup.ready.length}）</h4>
-            ${renderTaskLinks(m.standup.ready, '暂无待认领任务', (item) => `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '现在可开工' : '可提前开始'}</span>`)}
-          </div>
-        </div>
+      const isOpen = expandedStandup.has(m.id);
+      const countPills = [
+        m.doingCount ? `<span class="team-count-pill doing">进行中 ${m.doingCount}</span>` : '',
+        m.blockedCount ? `<span class="team-count-pill blocked">阻塞 ${m.blockedCount}</span>` : '',
+        m.recentDoneCount ? `<span class="team-count-pill done">近期完成 ${m.recentDoneCount}</span>` : '',
+        m.readyCount ? `<span class="team-count-pill ready">可开工 ${m.readyCount}</span>` : '',
+      ].filter(Boolean).join('') || '<span class="empty">暂无待办</span>';
+
+      const groups = [
+        m.standup.blocked.length ? `<div class="team-standup-group"><h4>阻塞卡点（${m.standup.blocked.length}）</h4>${renderTaskLinks(m.standup.blocked, (item) => `<span class="status-chip red">阻塞 ${item.progress}%</span>`)}</div>` : '',
+        m.standup.doing.length ? `<div class="team-standup-group"><h4>进行中 / 持锁执行（${m.standup.doing.length}）</h4>${renderTaskLinks(m.standup.doing, (item) => item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">${item.progress}%</span>`)}</div>` : '',
+        m.standup.recentDone.length ? `<div class="team-standup-group"><h4>近 2 天已完成（${m.standup.recentDone.length}）</h4>${renderTaskLinks(m.standup.recentDone, (item) => `<span class="status-chip green">完成 ${(item.actualEnd || item.end).slice(5)}</span>`)}</div>` : '',
+        m.standup.ready.length ? `<div class="team-standup-group"><h4>待认领 / 可开工（${m.standup.ready.length}）</h4>${renderTaskLinks(m.standup.ready, (item) => `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '现在可开工' : '可提前开始'}</span>`)}</div>` : '',
+      ].filter(Boolean);
+
+      const bodyHtml = isOpen
+        ? `<div class="team-standup-body">${groups.length ? `<div class="team-standup-sections">${groups.join('')}</div>` : '<p class="empty">当前无活跃、阻塞、近期完成或可开工任务。</p>'}</div>`
+        : '';
+
+      return `<article class="team-member-card state-${esc(m.loadState)} ${isOpen ? 'open' : 'collapsed'}">
+        <button type="button" class="team-card-toggle" data-team-standup="${esc(m.id)}" aria-expanded="${isOpen}">
+          <span class="team-card-identity">
+            <strong>${esc(m.label)}</strong>${kindBadge}${groupBadge}<span class="team-state-badge ${m.loadState}">${LOAD_LABELS[m.loadState]}</span>
+          </span>
+          <span class="team-card-summary">
+            ${countPills}
+            <span class="team-chevron" aria-hidden="true">${isOpen ? '▾' : '▸'}</span>
+          </span>
+        </button>
+        ${bodyHtml}
       </article>`;
     }).join('');
 
+    const renderMatrixCell = (items, emptyCls, tagFn) => {
+      if (!items.length) return '<span class="team-matrix-empty">—</span>';
+      return `<ul class="team-matrix-items">${items.map((item) => {
+        const href = `?project=${encodeURIComponent(item.projectId)}&amp;task=${encodeURIComponent(item.id)}#timeline`;
+        const claimTag = item.claim
+          ? `<span class="claim-chip ${item.claim.state === 'stale' ? 'stale' : 'active'}">${esc(item.claim.actor)}${item.claim.remainingMinutes != null ? ` ${item.claim.remainingMinutes}m` : ''}</span>`
+          : '';
+        return `<li class="team-matrix-item ${emptyCls || ''}">
+          <a href="${href}"><span class="portfolio-proj-badge">${esc(item.projectName)}</span> ${esc(item.id)} · ${esc(item.title)}</a>
+          <div class="team-matrix-tags">${tagFn(item)}${claimTag}</div>
+        </li>`;
+      }).join('')}</ul>`;
+    };
+
+    const standupMatrix = `<div class="team-table-wrap"><table class="team-matrix-table">
+      <thead><tr><th>成员</th><th>阻塞卡点</th><th>进行中 / 持锁执行</th><th>近 2 天已完成</th><th>待认领 / 可开工</th></tr></thead>
+      <tbody>${members.map((m) => {
+        const kindBadge = `<span class="roster-kind ${m.kind}">${m.kind === 'agent' ? 'AI' : '人类'}</span>`;
+        const groupBadge = m.group ? `<span class="team-group-tag">${esc(m.group)}</span>` : '';
+        return `<tr class="state-${esc(m.loadState)}">
+          <td class="team-matrix-member">
+            <strong>${esc(m.label)}</strong>
+            <div class="team-card-badges">${kindBadge}${groupBadge}<span class="team-state-badge ${m.loadState}">${LOAD_LABELS[m.loadState]}</span></div>
+          </td>
+          <td>${renderMatrixCell(m.standup.blocked, 'is-blocked', (item) => `<span class="status-chip red">阻塞 ${item.progress}%</span>`)}</td>
+          <td>${renderMatrixCell(m.standup.doing, '', (item) => item.claimedPending ? '<span class="status-chip claimed-pending">已认领·待更新进度</span>' : `<span class="status-chip doing">${item.progress}%</span>`)}</td>
+          <td>${renderMatrixCell(m.standup.recentDone, '', (item) => `<span class="status-chip green">${esc((item.actualEnd || item.end).slice(5))}</span>`)}</td>
+          <td>${renderMatrixCell(m.standup.ready, '', (item) => `<span class="status-chip ${item.availability === 'now' ? 'green' : 'blue'}">${item.availability === 'now' ? '可开工' : '可提前'}</span>`)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+
+    const allOpen = members.length > 0 && members.every((m) => expandedStandup.has(m.id));
+    const modeSwitch = `<div class="seg" role="group" aria-label="站会展示模式">
+      <button type="button" data-standup-mode="matrix" class="${standupMode === 'matrix' ? 'on' : ''}" aria-pressed="${standupMode === 'matrix'}">矩阵视图</button>
+      <button type="button" data-standup-mode="list" class="${standupMode === 'list' ? 'on' : ''}" aria-pressed="${standupMode === 'list'}">列表视图</button>
+    </div>`;
+    const expandAllBtn = standupMode === 'list' && members.length
+      ? `<button type="button" class="btn-sm" data-team-standup-all="${allOpen ? 'collapse' : 'expand'}">${allOpen ? '全部收起' : '全部展开'}</button>`
+      : '';
+    const standupContent = !members.length
+      ? '<p class="empty">暂无符合条件的团队成员。</p>'
+      : standupMode === 'matrix'
+        ? standupMatrix
+        : `<div class="team-standup-list">${standupCards}</div>`;
+
     const standupSection = `<section class="team-section">
-      <div class="portfolio-list-head"><h2>每日站会按人视图</h2><p>按成员聚合跨项目进展、阻塞、近 2 天交付与可接手任务</p></div>
-      ${members.length ? `<div class="team-standup-grid">${standupCards}</div>` : '<p class="empty">暂无符合条件的团队成员。</p>'}
+      <div class="portfolio-list-head">
+        <div><h2>每日站会按人视图</h2><p>${standupMode === 'matrix' ? '成员 × 状态矩阵，横向扫视阻塞、进展、近期完成与可接手任务' : '默认展开重点关注成员，点击成员行展开或收起明细'}</p></div>
+        <div class="snapshot-controls">${modeSwitch}${expandAllBtn}</div>
+      </div>
+      ${standupContent}
     </section>`;
 
-    $('teamBody').innerHTML = summaryHtml + loadTable + standupSection;
+    const nextHtml = summaryHtml + loadTable + standupSection;
+    if (nextHtml !== lastMarkup) {
+      lastMarkup = nextHtml;
+      $('teamBody').innerHTML = nextHtml;
+    }
   }
 
   async function refresh(today) {
     const request = ++sequence;
-    status('正在聚合跨项目团队负载…');
+    if (!view || view.today !== today) status('正在聚合跨项目团队负载…');
     try {
       const response = await fetch(`/api/team/overview?today=${encodeURIComponent(today)}`);
       const data = await response.json().catch(() => null);
@@ -264,11 +333,40 @@ export function installTeamPanel({ esc, onTeamSaved } = {}) {
     render();
   });
   $('teamBody')?.addEventListener('click', (e) => {
-    const btn = e.target?.closest?.('[data-team-collision]');
-    if (!btn) return;
-    const id = btn.dataset.teamCollision;
-    expandedCollisionId = expandedCollisionId === id ? null : id;
-    render();
+    const colBtn = e.target?.closest?.('[data-team-collision]');
+    if (colBtn) {
+      const id = colBtn.dataset.teamCollision;
+      expandedCollisionId = expandedCollisionId === id ? null : id;
+      render();
+      return;
+    }
+    const standupBtn = e.target?.closest?.('[data-team-standup]');
+    if (standupBtn) {
+      const id = standupBtn.dataset.teamStandup;
+      if (expandedStandup.has(id)) expandedStandup.delete(id);
+      else expandedStandup.add(id);
+      render();
+      return;
+    }
+    const allBtn = e.target?.closest?.('[data-team-standup-all]');
+    if (allBtn) {
+      if (allBtn.dataset.teamStandupAll === 'expand') {
+        for (const m of filteredMembers()) expandedStandup.add(m.id);
+      } else {
+        expandedStandup.clear();
+      }
+      render();
+      return;
+    }
+    const modeBtn = e.target?.closest?.('[data-standup-mode]');
+    if (modeBtn) {
+      const nextMode = modeBtn.dataset.standupMode;
+      if (nextMode === 'matrix' || nextMode === 'list') {
+        standupMode = nextMode;
+        try { localStorage.setItem('team.standupMode', nextMode); } catch { /* ignore */ }
+        render();
+      }
+    }
   });
 
   $('configTeamBtn')?.addEventListener('click', () => { void openConfigDialog(); });
