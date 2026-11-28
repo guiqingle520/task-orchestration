@@ -65,9 +65,11 @@ function watchProject(project) {
         if (!planChanged) return;
         planChanged = false;
         try {
+          const hasAutoAlert = webhooks.list().some((ch) => ch.enabled && ch.autoAlert && ch.projects.includes(project.id));
+          if (!hasAutoAlert) return;
           const event = notificationEvent(project, 'risks');
-          void webhooks.notify(project.id, event, 'all', true).catch(() => console.error('自动预警失败'));
-        } catch { console.error('无法生成自动预警'); }
+          void webhooks.notify(project.id, event, 'all', true).catch((err) => console.error(`自动预警失败 [${project.id}]:`, err?.message || err));
+        } catch (err) { console.error(`无法生成自动预警 [${project.id}]:`, err?.message || err); }
       }, 150);
     });
     watcher.on('error', (err) => console.error('计划文件监听失败:', err.message));
